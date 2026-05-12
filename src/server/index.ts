@@ -1,5 +1,6 @@
 import type { PluginModule } from "@opencode-ai/plugin"
 import { buildAutoresearchCompactionSummary } from "../core/compaction"
+import { AUTORESEARCH_CANONICAL_COMMAND } from "../core/session-config"
 import { injectAutoresearchConfig, type MutablePluginConfig } from "./commands"
 import { loadAutoresearchSession } from "./storage"
 import { runtimeStore } from "./runtime"
@@ -38,6 +39,8 @@ const plugin: PluginModule = {
                   text: [
                     "Continue the autoresearch loop.",
                     "Review the latest run in autoresearch.jsonl, decide whether to keep, discard, or retry it, and only then start the next iteration if it is justified.",
+                    "Use autoresearch.ideas.md for deferred candidates and prefer the canonical autoresearch.sh entrypoint when it exists.",
+                    "Log durable ASI for any run that changes your understanding of the search space.",
                   ].join(" "),
                 },
               ],
@@ -60,16 +63,24 @@ const plugin: PluginModule = {
         const session = await loadAutoresearchSession(input.directory, runtime?.workDir)
         if (!session.state.config) return
 
+        const benchmarkCommand = session.state.config.benchmarkCommand
+          ? ` Benchmark delegate: ${session.state.config.benchmarkCommand}.`
+          : ""
+
         output.system.push(
           [
             "Autoresearch session is active for this project.",
             `Mode: ${session.state.mode}.`,
             `Session name: ${session.state.config.name}.`,
             `Primary command: ${session.state.config.command}.`,
-            "Run benchmark candidates through run_experiment whenever possible; if you probe manually, rerun the final candidate through the tool before deciding.",
+            benchmarkCommand.trim(),
+            `Read autoresearch.md for the session contract and use ${AUTORESEARCH_CANONICAL_COMMAND} as the benchmark entrypoint when it exists.`,
+            "Use autoresearch.ideas.md to keep deferred but promising hypotheses alive across compaction or reverts.",
+            "Persist ASI with log_experiment so discarded or retried runs leave behind reusable diagnostic memory.",
+            "Finish the current run_experiment plus log_experiment cycle before pivoting to unrelated user input.",
             "Before keeping a run, ensure the winning change is applied to the intended implementation, rerun validation at the default target configuration, then log the decision.",
             "Prefer the autoresearch tools for initialization, running benchmarks, logging keep or discard decisions, and session control.",
-          ].join(" "),
+          ].filter(Boolean).join(" "),
         )
       },
       "experimental.session.compacting": async ({ sessionID }, output) => {

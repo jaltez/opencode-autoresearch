@@ -1,8 +1,14 @@
-import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { appendFile, chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
-import { buildAutoresearchCompactionSummary } from "../core/compaction"
+import { buildAutoresearchPresentationModel } from "../autoresearch-presentation"
 import { reconstructJsonlState, serializeJsonlEntry } from "../core/jsonl"
-import { resolveExistingAutoresearchPaths, type ResolvedAutoresearchPaths } from "../core/paths"
+import { normalizeAutoresearchState } from "../core/session-config"
+import {
+  resolveExistingAutoresearchPaths,
+  resolveLegacyAutoresearchHookPath,
+  type ResolvedAutoresearchPaths,
+} from "../core/paths"
+import { renderDashboardHtml } from "./dashboard-html"
 import type { AutoresearchJsonlEntry, AutoresearchState } from "../core/types"
 
 export interface LoadedAutoresearchSession {
@@ -20,11 +26,13 @@ export async function loadAutoresearchSession(projectDir: string, configuredWork
     readOptionalText(paths.ideas),
   ])
 
+  const state = await normalizeAutoresearchState(paths, reconstructJsonlState(jsonlText ?? ""))
+
   return {
     ideasText,
     notesText,
     paths,
-    state: reconstructJsonlState(jsonlText ?? ""),
+    state,
   }
 }
 
@@ -37,7 +45,17 @@ export async function ensureAutoresearchDirectory(paths: ResolvedAutoresearchPat
   await mkdir(paths.directory, { recursive: true })
 }
 
-export async function ensureAutoresearchFiles(paths: ResolvedAutoresearchPaths, input: { ideas?: string; notes?: string }): Promise<void> {
+export async function ensureAutoresearchFiles(
+  paths: ResolvedAutoresearchPaths,
+  input: {
+    checksScript?: string
+    config?: string
+    createHooksDirectory?: boolean
+    ideas?: string
+    notes?: string
+    script?: string
+  },
+): Promise<void> {
   await ensureAutoresearchDirectory(paths)
 
   if ((await readOptionalText(paths.notes)) === undefined) {
@@ -47,21 +65,55 @@ export async function ensureAutoresearchFiles(paths: ResolvedAutoresearchPaths, 
   if ((await readOptionalText(paths.ideas)) === undefined) {
     await writeAtomic(paths.ideas, input.ideas ?? "# Ideas\n\n")
   }
+
+  if (input.script !== undefined && (await readOptionalText(paths.script)) === undefined) {
+    await writeExecutableAtomic(paths.script, input.script)
+  }
+
+  if (input.config !== undefined && (await readOptionalText(paths.config)) === undefined) {
+    await writeAtomic(paths.config, input.config)
+  }
+
+  if (input.checksScript !== undefined && (await readOptionalText(paths.checks)) === undefined) {
+    await writeExecutableAtomic(paths.checks, input.checksScript)
+  }
+
+  if (input.createHooksDirectory) {
+    await mkdir(paths.hooksDirectory, { recursive: true })
+  }
 }
 
 export async function removeAutoresearchFiles(paths: ResolvedAutoresearchPaths): Promise<void> {
   await Promise.all([
+    rm(paths.checks, { force: true }).catch(() => undefined),
+    rm(paths.config, { force: true }).catch(() => undefined),
     rm(paths.dashboard, { force: true }).catch(() => undefined),
+    rm(paths.hooksDirectory, { force: true, recursive: true }).catch(() => undefined),
     rm(paths.ideas, { force: true }).catch(() => undefined),
     rm(paths.jsonl, { force: true }).catch(() => undefined),
     rm(paths.notes, { force: true }).catch(() => undefined),
+    rm(resolveLegacyAutoresearchHookPath(paths, "before"), { force: true }).catch(() => undefined),
+    rm(resolveLegacyAutoresearchHookPath(paths, "after"), { force: true }).catch(() => undefined),
+    rm(paths.script, { force: true }).catch(() => undefined),
     rm(paths.state, { force: true }).catch(() => undefined),
   ])
 }
 
-export async function writeDashboard(paths: ResolvedAutoresearchPaths, state: AutoresearchState, notesText?: string, ideasText?: string): Promise<string> {
-  const summary = buildAutoresearchCompactionSummary({ ideasText, notesText, state })
-  const html = renderDashboardHtml(summary)
+export async function writeDashboard(
+  paths: ResolvedAutoresearchPaths,
+  state: AutoresearchState,
+  notesText?: string,
+  ideasText?: string,
+  projectDir = paths.directory,
+): Promise<string> {
+  const model = buildAutoresearchPresentationModel({
+    ideasText,
+    notesText,
+    paths,
+    projectDir,
+    state,
+  })
+  const html = renderDashboardHtml(model)
   await ensureAutoresearchDirectory(paths)
   await writeAtomic(paths.dashboard, html)
   return paths.dashboard
@@ -80,44 +132,13 @@ async function readOptionalText(filePath: string): Promise<string | undefined> {
   }
 }
 
-function renderDashboardHtml(summary: string): string {
-  const escaped = escapeHtml(summary)
-  return [
-    "<!doctype html>",
-    '<html lang="en">',
-    "<head>",
-    '  <meta charset="utf-8">',
-    '  <meta name="viewport" content="width=device-width, initial-scale=1">',
-    "  <title>Autoresearch Dashboard</title>",
-    "  <style>",
-    "    :root { color-scheme: light; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }",
-    "    body { margin: 0; background: #f5f0e8; color: #1d1b18; }",
-    "    main { max-width: 960px; margin: 0 auto; padding: 32px 20px 56px; }",
-    "    h1 { font-size: 28px; margin: 0 0 12px; }",
-    "    p { margin: 0 0 20px; color: #5e574d; }",
-    "    pre { white-space: pre-wrap; background: #fffdf8; border: 1px solid #d8cfbe; border-radius: 16px; padding: 20px; overflow: auto; line-height: 1.45; }",
-    "  </style>",
-    "</head>",
-    "<body>",
-    "  <main>",
-    "    <h1>Autoresearch Dashboard</h1>",
-    "    <p>Minimal browser export generated from the current autoresearch session state.</p>",
-    `    <pre>${escaped}</pre>`,
-    "  </main>",
-    "</body>",
-    "</html>",
-  ].join("\n")
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-}
-
 async function writeAtomic(filePath: string, content: string): Promise<void> {
   const tempPath = path.join(path.dirname(filePath), `.tmp-${path.basename(filePath)}-${process.pid}-${Date.now()}`)
   await writeFile(tempPath, content, "utf8")
   await rename(tempPath, filePath)
+}
+
+async function writeExecutableAtomic(filePath: string, content: string): Promise<void> {
+  await writeAtomic(filePath, content)
+  await chmod(filePath, 0o755)
 }

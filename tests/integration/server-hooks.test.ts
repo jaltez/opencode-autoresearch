@@ -85,7 +85,7 @@ describe("server hooks integration", () => {
         checks: ["./check.sh"],
         command: "./benchmark.sh",
         name: "stable-benchmark",
-        objective: "Keep the workflow close to pi-autoresearch.",
+        objective: "Keep the workflow close to autoresearch standards.",
         primaryMetric: "accuracy",
       },
       context,
@@ -111,6 +111,9 @@ describe("server hooks integration", () => {
     )
     expect(system.system.join("\n")).toContain("Autoresearch session is active")
     expect(system.system.join("\n")).toContain("stable-benchmark")
+    expect(system.system.join("\n")).toContain("./autoresearch.sh")
+    expect(system.system.join("\n")).toContain("autoresearch.ideas.md")
+    expect(system.system.join("\n")).toContain("ASI")
 
     const compacting = { context: [] as string[], prompt: undefined as string | undefined }
     await hooks["experimental.session.compacting"]?.({ sessionID: context.sessionID }, compacting)

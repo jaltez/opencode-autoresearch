@@ -23,7 +23,9 @@ describe("server workflows integration", () => {
 
     const createResult = await autoresearchCreateTool.execute(
       {
+        checks: ["bun test"],
         createHooks: true,
+        maxIterations: 5,
         objective: "Measure test command quality.",
         primaryMetric: "accuracy",
       },
@@ -32,12 +34,19 @@ describe("server workflows integration", () => {
 
     expect(typeof createResult).toBe("object")
     const session = await loadAutoresearchSession(workspace)
-    expect(session.state.config?.command).toBe("bun test")
+    expect(session.state.config?.command).toBe("./autoresearch.sh")
+    expect(session.state.config?.benchmarkCommand).toBe("bun test")
     expect(await Bun.file(path.join(workspace, "autoresearch.md")).exists()).toBe(true)
     expect(await Bun.file(path.join(workspace, "autoresearch.ideas.md")).exists()).toBe(true)
-    expect(await Bun.file(path.join(workspace, "before.sh")).exists()).toBe(true)
-    expect(await Bun.file(path.join(workspace, "after.sh")).exists()).toBe(true)
-    expect((await readText(path.join(workspace, "before.sh"))).includes("before hook ok")).toBe(true)
+    expect(await Bun.file(path.join(workspace, "autoresearch.sh")).exists()).toBe(true)
+    expect(await Bun.file(path.join(workspace, "autoresearch.checks.sh")).exists()).toBe(true)
+    expect(await Bun.file(path.join(workspace, "autoresearch.config.json")).exists()).toBe(true)
+    expect(await Bun.file(path.join(workspace, "autoresearch.hooks", "before.sh")).exists()).toBe(true)
+    expect(await Bun.file(path.join(workspace, "autoresearch.hooks", "after.sh")).exists()).toBe(true)
+    expect((await readText(path.join(workspace, "autoresearch.hooks", "before.sh"))).includes("before hook ok")).toBe(true)
+    expect(await readText(path.join(workspace, "autoresearch.md"))).toContain("## Objective")
+    expect(await readText(path.join(workspace, "autoresearch.sh"))).toContain("bun test")
+    expect(await readText(path.join(workspace, "autoresearch.config.json"))).toContain('"maxIterations": 5')
   })
 
   it("can scaffold hooks independently without overwriting existing files", async () => {
@@ -45,11 +54,11 @@ describe("server workflows integration", () => {
     const context = createToolContext(workspace)
 
     await autoresearchHooksTool.execute({ kind: "before", instructions: "Run lightweight lint checks." }, context)
-    const first = await readText(path.join(workspace, "before.sh"))
+    const first = await readText(path.join(workspace, "autoresearch.hooks", "before.sh"))
     expect(first).toContain("Run lightweight lint checks.")
 
     await autoresearchHooksTool.execute({ kind: "before" }, context)
-    const second = await readText(path.join(workspace, "before.sh"))
+    const second = await readText(path.join(workspace, "autoresearch.hooks", "before.sh"))
     expect(second).toBe(first)
   })
 
@@ -100,5 +109,58 @@ describe("server workflows integration", () => {
     expect(featureBOnA).toBe("baseline-b")
     expect(featureAOnB).toBe("baseline-a")
     expect(featureBOnB).toBe("improved-b")
+  })
+
+  it("stashes dirty worktree changes and keeps autoresearch artifacts out of finalize branches", async () => {
+    const workspace = await createFixtureWorkspace("finalize-benchmark")
+    const context = createToolContext(workspace)
+    const runExperimentTool = createRunExperimentTool()
+
+    await initExperimentTool.execute(
+      {
+        checks: ["./check.sh"],
+        command: "./benchmark.sh",
+        name: "finalize-benchmark",
+        objective: "Finalize safely even with a dirty worktree.",
+      },
+      context,
+    )
+
+    await runExperimentTool.execute({ summary: "Improve feature A." }, context)
+    await logExperimentTool.execute({ decision: "keep", summary: "Keep feature A change." }, context)
+    await runExperimentTool.execute({ summary: "Improve feature B." }, context)
+    await logExperimentTool.execute({ decision: "keep", summary: "Keep feature B change." }, context)
+
+    await Bun.write(path.join(workspace, "scratch.txt"), "local draft\n")
+    const originalBranch = (await Bun.$`git branch --show-current`.cwd(workspace).text()).trim()
+
+    const finalizeResult = await autoresearchFinalizeTool.execute({ createBranches: true, prefix: "review" }, context)
+    if (
+      typeof finalizeResult === "string"
+      || !finalizeResult.metadata
+      || !Array.isArray((finalizeResult.metadata as { createdBranches?: unknown }).createdBranches)
+    ) {
+      throw new Error(`Expected finalize metadata, got string output: ${finalizeResult}`)
+    }
+
+    const createdBranches = finalizeResult.metadata.createdBranches as string[]
+    expect(createdBranches).toHaveLength(2)
+    expect(await readText(path.join(workspace, "scratch.txt"))).toBe("local draft\n")
+    expect((await Bun.$`git branch --show-current`.cwd(workspace).text()).trim()).toBe(originalBranch)
+    expect(await Bun.$`git status --porcelain=v1`.cwd(workspace).text()).toContain("?? scratch.txt")
+
+    for (const branchName of createdBranches) {
+      const proc = Bun.spawn(["git", "cat-file", "-e", `${branchName}:autoresearch.jsonl`], {
+        cwd: workspace,
+        stderr: "pipe",
+        stdout: "pipe",
+      })
+      expect(await proc.exited).not.toBe(0)
+    }
+
+    const text = typeof finalizeResult === "string" ? finalizeResult : finalizeResult.output
+    expect(text).toContain("Stashed dirty worktree")
+    expect(text).toContain("Verified finalize branches: no autoresearch session artifacts were included.")
+    expect(text).toContain("Verified finalize branches: the union of review branches matches the final autoresearch branch.")
   })
 })

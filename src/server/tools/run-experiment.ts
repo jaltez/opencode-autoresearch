@@ -2,8 +2,10 @@ import path from "node:path"
 import { spawn } from "node:child_process"
 import { tool } from "@opencode-ai/plugin"
 import { Effect } from "effect"
-import { evaluateMetricCheckExpression } from "../../core/checks"
+import { evaluateMetricCheckExpression, parseMetricCheckExpression } from "../../core/checks"
 import { parseMetricLines } from "../../core/metrics"
+import { autoresearchHookCandidates, resolveAutoresearchPaths } from "../../core/paths"
+import { AUTORESEARCH_CANONICAL_COMMAND, isAutoresearchScriptCommand } from "../../core/session-config"
 import { createHookInvocation, DEFAULT_HOOK_TIMEOUT_MS } from "../../core/hooks"
 import type { ExperimentCheckResult, ExperimentRun, HookInvocation, MetricValue, RunStatus } from "../../core/types"
 import { preservedArtifactPaths, captureGitChanges } from "../git"
@@ -28,7 +30,19 @@ export function createRunExperimentTool() {
         return "No autoresearch session is configured yet. Run init_experiment first."
       }
 
-      const command = args.command ?? config.command
+      const hasAutoresearchScript = await Bun.file(session.paths.script).exists()
+      if (hasAutoresearchScript && args.command && !isAutoresearchScriptCommand(args.command, session.paths.script)) {
+        return [
+          "autoresearch.sh exists for this session, so run_experiment must use it as the canonical entrypoint.",
+          `Use ${AUTORESEARCH_CANONICAL_COMMAND} instead of ${args.command}.`,
+        ].join("\n")
+      }
+
+      const command = hasAutoresearchScript ? AUTORESEARCH_CANONICAL_COMMAND : (args.command ?? config.command)
+      if (!hasAutoresearchScript && isAutoresearchScriptCommand(command, session.paths.script)) {
+        return `Configured command ${command} expects autoresearch.sh, but ${path.relative(context.directory, session.paths.script) || "autoresearch.sh"} is missing.`
+      }
+
       await Effect.runPromise(context.ask({
         always: ["*"],
         metadata: { command, tool: "Run autoresearch experiment" },
@@ -43,7 +57,6 @@ export function createRunExperimentTool() {
       const beforeHook = await executeHookIfPresent({
         context,
         directory: session.paths.directory,
-        fileName: "before.sh",
         kind: "before",
         stateSummary: args.summary,
       })
@@ -53,7 +66,7 @@ export function createRunExperimentTool() {
 
       const commandResult = await runShellCommand(session.paths.directory, command, context.abort)
       const metrics = parseMetricLines(commandResult.output)
-  const checks = await runChecks(session.paths.directory, config.checks ?? [], metrics, context.abort)
+      const checks = await runChecks(session.paths.directory, session.paths.checks, config.checks ?? [], metrics, context.abort)
       const hasFailedCheck = checks.some((item) => !item.passed)
       const status: RunStatus = hasFailedCheck ? "checks_failed" : commandResult.exitCode === 0 ? "completed" : "failed"
       const changes = await captureGitChanges(session.paths.directory, preservedArtifactPaths(session.paths.directory))
@@ -70,6 +83,7 @@ export function createRunExperimentTool() {
         iteration,
         metrics,
         output: truncateOutput(commandResult.outputWithStderr),
+        segment: session.state.currentSegment,
         startedAt,
         status,
         summary: args.summary,
@@ -79,7 +93,6 @@ export function createRunExperimentTool() {
       const afterHook = await executeHookIfPresent({
         context,
         directory: session.paths.directory,
-        fileName: "after.sh",
         kind: "after",
         run,
         stateSummary: args.summary,
@@ -124,15 +137,33 @@ export function createRunExperimentTool() {
 
 async function runChecks(
   cwd: string,
+  checksScriptPath: string,
   checks: readonly string[],
   metrics: readonly MetricValue[],
   signal: AbortSignal,
 ): Promise<ExperimentCheckResult[]> {
   const results: ExperimentCheckResult[] = []
+  const hasChecksScript = await Bun.file(checksScriptPath).exists()
+
+  if (hasChecksScript) {
+    const command = formatScriptCommand(cwd, checksScriptPath)
+    const result = await runShellCommand(cwd, command, signal)
+    results.push({
+      command,
+      exitCode: result.exitCode,
+      output: truncateOutput(result.outputWithStderr),
+      passed: result.exitCode === 0,
+    })
+  }
+
   for (const command of checks) {
     const metricCheck = evaluateMetricCheckExpression(command, metrics)
     if (metricCheck) {
       results.push(metricCheck)
+      continue
+    }
+
+    if (hasChecksScript && !parseMetricCheckExpression(command)) {
       continue
     }
 
@@ -150,13 +181,12 @@ async function runChecks(
 async function executeHookIfPresent(input: {
   context: Parameters<ReturnType<typeof createRunExperimentTool>["execute"]>[1]
   directory: string
-  fileName: string
   kind: HookInvocation["kind"]
   run?: ExperimentRun
   stateSummary?: string
 }): Promise<HookInvocation | undefined> {
-  const scriptPath = path.join(input.directory, input.fileName)
-  if (!(await Bun.file(scriptPath).exists())) return undefined
+  const scriptPath = await findExistingHookScript(input.directory, input.kind)
+  if (!scriptPath) return undefined
 
   const payload = {
     projectDir: input.context.directory,
@@ -166,7 +196,7 @@ async function executeHookIfPresent(input: {
     workDir: input.directory,
   }
 
-  const result = await runShellCommand(input.directory, scriptPath, input.context.abort, {
+  const result = await runShellCommand(input.directory, formatScriptCommand(input.directory, scriptPath), input.context.abort, {
     stdin: `${JSON.stringify(payload, null, 2)}\n`,
     timeoutMs: DEFAULT_HOOK_TIMEOUT_MS,
   })
@@ -232,6 +262,24 @@ async function runShellCommand(
     abort.removeEventListener("abort", onAbort)
     if (timeout) clearTimeout(timeout)
   }
+}
+
+async function findExistingHookScript(directory: string, kind: HookInvocation["kind"]): Promise<string | undefined> {
+  const paths = resolveAutoresearchPaths(directory)
+  for (const candidate of autoresearchHookCandidates(paths, kind)) {
+    if (await Bun.file(candidate).exists()) return candidate
+  }
+  return undefined
+}
+
+function formatScriptCommand(cwd: string, scriptPath: string): string {
+  const relative = path.relative(cwd, scriptPath) || path.basename(scriptPath)
+  if (relative.startsWith("./") || relative.startsWith("../")) return shellQuote(relative)
+  return shellQuote(`./${relative}`)
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll(`'`, `'"'"'`)}'`
 }
 
 function truncateOutput(text: string, maxChars = 12_000): string {

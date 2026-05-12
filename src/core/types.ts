@@ -33,6 +33,7 @@ export interface ExperimentCheckResult {
 }
 
 export interface ExperimentConfig {
+  benchmarkCommand?: string
   command: string
   createdAt: string
   maxIterations?: number
@@ -44,13 +45,16 @@ export interface ExperimentConfig {
 }
 
 export interface ExperimentRun {
+  asi?: Record<string, unknown>
   id: string
   iteration: number
   startedAt: string
   endedAt?: string
   command: string
+  confidence?: number | null
   status: RunStatus
   decision?: RunDecision
+  segment?: number
   summary?: string
   output?: string
   exitCode?: number
@@ -77,6 +81,7 @@ export interface HookInvocation {
 
 export interface AutoresearchState {
   config?: ExperimentConfig
+  currentSegment?: number
   hooks: HookInvocation[]
   lastUpdatedAt?: string
   mode: AutoresearchMode
@@ -89,6 +94,7 @@ export interface SessionEntry {
   at: string
   config: ExperimentConfig
   mode?: AutoresearchMode
+  segment?: number
   type: "session"
 }
 
@@ -121,6 +127,7 @@ export type AutoresearchJsonlEntry = HookEntry | ModeEntry | NoteEntry | RunEntr
 
 export function createEmptyState(): AutoresearchState {
   return {
+    currentSegment: 0,
     hooks: [],
     mode: "off",
     notes: [],

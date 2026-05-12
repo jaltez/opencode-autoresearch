@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test"
+import { writeFile } from "node:fs/promises"
 import path from "node:path"
 import { loadAutoresearchSession } from "../../src/server/storage"
 import { runtimeStore } from "../../src/server/runtime"
+import { controlTool } from "../../src/server/tools/control"
 import { initExperimentTool } from "../../src/server/tools/init-experiment"
 import { logExperimentTool } from "../../src/server/tools/log-experiment"
 import { createRunExperimentTool } from "../../src/server/tools/run-experiment"
@@ -57,6 +59,8 @@ describe("server tools integration", () => {
     const runResult = await runExperimentTool.execute({ summary: "Baseline improvement attempt." }, context)
     expect(typeof runResult).toBe("object")
     const sessionAfterRun = await loadAutoresearchSession(workspace)
+    expect(sessionAfterRun.state.config?.command).toBe("./autoresearch.sh")
+    expect(sessionAfterRun.state.config?.benchmarkCommand).toBe("./benchmark.sh")
     const recordedRun = sessionAfterRun.state.runs[0]
     expect(recordedRun?.status).toBe("completed")
     expect(recordedRun?.metrics.map((metric) => metric.name)).toEqual(["accuracy", "latency_ms"])
@@ -80,6 +84,29 @@ describe("server tools integration", () => {
     expect(appText.trim()).toBe("optimized")
     expect(context.asked).toHaveLength(2)
     expect(context.asked[1]?.patterns).toEqual(["git commit"])
+  })
+
+  it("rejects ad hoc run commands when autoresearch.sh is present", async () => {
+    const workspace = await createFixtureWorkspace("stable-benchmark")
+    const context = createToolContext(workspace)
+    const runExperimentTool = createRunExperimentTool()
+
+    await initExperimentTool.execute(
+      {
+        checks: ["./check.sh"],
+        command: "./benchmark.sh",
+        name: "stable-benchmark",
+        objective: "Use the canonical benchmark entrypoint.",
+        primaryMetric: "accuracy",
+      },
+      context,
+    )
+
+    const result = await runExperimentTool.execute({ command: "./benchmark.sh" }, context)
+    expect(result).toBe([
+      "autoresearch.sh exists for this session, so run_experiment must use it as the canonical entrypoint.",
+      "Use ./autoresearch.sh instead of ./benchmark.sh.",
+    ].join("\n"))
   })
 
   it("can log a nested-workdir run after runtime state is lost", async () => {
@@ -141,5 +168,146 @@ describe("server tools integration", () => {
     expect(sessionAfterDiscard.state.runs[0]?.status).toBe("discarded")
     expect(runtimeStore.get(context.sessionID)?.autoResumePending).toBe(true)
     expect((await readText(path.join(workspace, "app.txt"))).trim()).toBe("baseline")
+  })
+
+  it("hydrates maxIterations from autoresearch.config.json", async () => {
+    const workspace = await createFixtureWorkspace("stable-benchmark")
+    const context = createToolContext(workspace)
+    const runExperimentTool = createRunExperimentTool()
+
+    await initExperimentTool.execute(
+      {
+        checks: ["./check.sh"],
+        command: "./benchmark.sh",
+        name: "stable-benchmark",
+        objective: "Read iteration limits from the config file.",
+        primaryMetric: "accuracy",
+      },
+      context,
+    )
+
+    await writeFile(path.join(workspace, "autoresearch.config.json"), '{\n  "maxIterations": 1\n}\n', "utf8")
+
+    const hydrated = await loadAutoresearchSession(workspace)
+    expect(hydrated.state.config?.maxIterations).toBe(1)
+
+    await runExperimentTool.execute({}, context)
+    expect(runtimeStore.get(context.sessionID)?.autoResumePending).toBe(false)
+  })
+
+  it("persists ASI and decision-time confidence on kept runs", async () => {
+    const workspace = await createFixtureWorkspace("stable-benchmark")
+    const context = createToolContext(workspace)
+    const runExperimentTool = createRunExperimentTool()
+
+    await initExperimentTool.execute(
+      {
+        checks: ["./check.sh"],
+        command: "./benchmark.sh",
+        name: "stable-benchmark",
+        objective: "Keep durable analysis for good and bad runs.",
+        primaryMetric: "accuracy",
+      },
+      context,
+    )
+
+    await writeFile(path.join(workspace, "benchmark.sh"), [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "printf 'optimized\\n' > app.txt",
+      "echo 'METRIC accuracy=0.90 higher'",
+      "echo 'METRIC latency_ms=120 ms lower'",
+    ].join("\n"), "utf8")
+    await runExperimentTool.execute({ summary: "Baseline" }, context)
+    await logExperimentTool.execute({ decision: "keep", asi: '{"hypothesis":"baseline capture"}' }, context)
+
+    await writeFile(path.join(workspace, "benchmark.sh"), [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "printf 'optimized\\n' > app.txt",
+      "echo 'METRIC accuracy=0.91 higher'",
+      "echo 'METRIC latency_ms=118 ms lower'",
+    ].join("\n"), "utf8")
+    await runExperimentTool.execute({ summary: "Candidate 2" }, context)
+    await logExperimentTool.execute({ decision: "keep", asi: '{"hypothesis":"narrower prompt","next_action_hint":"probe retrieval only"}' }, context)
+
+    await writeFile(path.join(workspace, "benchmark.sh"), [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "printf 'optimized\\n' > app.txt",
+      "echo 'METRIC accuracy=0.92 higher'",
+      "echo 'METRIC latency_ms=117 ms lower'",
+    ].join("\n"), "utf8")
+    await runExperimentTool.execute({ summary: "Candidate 3" }, context)
+    const logResult = await logExperimentTool.execute({ decision: "keep", asi: '{"hypothesis":"smaller retrieval scope"}' }, context)
+
+    expect(typeof logResult).toBe("object")
+    const session = await loadAutoresearchSession(workspace)
+    expect(session.state.runs).toHaveLength(3)
+    expect(session.state.runs[1]?.asi).toEqual({
+      hypothesis: "narrower prompt",
+      next_action_hint: "probe retrieval only",
+    })
+    expect(session.state.runs[2]?.confidence).toBeGreaterThan(1.5)
+    expect(session.state.runs[2]?.segment).toBe(1)
+  })
+
+  it("exports an HTML dashboard with signal cards and finalize preview", async () => {
+    const workspace = await createFixtureWorkspace("stable-benchmark")
+    const context = createToolContext(workspace)
+    const runExperimentTool = createRunExperimentTool()
+
+    await initExperimentTool.execute(
+      {
+        checks: ["./check.sh"],
+        command: "./benchmark.sh",
+        name: "stable-benchmark",
+        objective: "Export the same signal surface shown in the TUI.",
+        primaryMetric: "accuracy",
+      },
+      context,
+    )
+
+    await writeFile(path.join(workspace, "benchmark.sh"), [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "printf 'optimized\\n' > app.txt",
+      "echo 'METRIC accuracy=0.90 higher'",
+      "echo 'METRIC latency_ms=120 ms lower'",
+    ].join("\n"), "utf8")
+    await runExperimentTool.execute({ summary: "Baseline" }, context)
+    await logExperimentTool.execute({ decision: "keep", asi: '{"hypothesis":"baseline capture"}' }, context)
+
+    await writeFile(path.join(workspace, "benchmark.sh"), [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "printf 'optimized\\n' > app.txt",
+      "echo 'METRIC accuracy=0.91 higher'",
+      "echo 'METRIC latency_ms=118 ms lower'",
+    ].join("\n"), "utf8")
+    await runExperimentTool.execute({ summary: "Candidate 2" }, context)
+    await logExperimentTool.execute({ decision: "keep", asi: '{"hypothesis":"narrower prompt","next_action_hint":"probe retrieval only"}' }, context)
+
+    await writeFile(path.join(workspace, "benchmark.sh"), [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "printf 'optimized\\n' > app.txt",
+      "echo 'METRIC accuracy=0.92 higher'",
+      "echo 'METRIC latency_ms=117 ms lower'",
+    ].join("\n"), "utf8")
+    await runExperimentTool.execute({ summary: "Candidate 3" }, context)
+
+    const exportResult = await controlTool.execute({ action: "export" }, context)
+    expect(exportResult).toContain("autoresearch.dashboard.html")
+
+    const html = await readText(path.join(workspace, "autoresearch.dashboard.html"))
+    expect(html).toContain("Autoresearch Export")
+    expect(html).toContain("Signal")
+    expect(html).toContain("Segment 1")
+    expect(html).toContain("1.0x noise floor")
+    expect(html).toContain("Best kept")
+    expect(html).toContain("probe retrieval only")
+    expect(html).toContain("Finalize Preview")
+    expect(html).toContain("autoresearch/run-1")
   })
 })

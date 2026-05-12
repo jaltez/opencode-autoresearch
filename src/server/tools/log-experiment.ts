@@ -1,5 +1,7 @@
 import { tool } from "@opencode-ai/plugin"
 import { Effect } from "effect"
+import { currentSegmentRuns } from "../../core/jsonl"
+import { computeSegmentConfidence } from "../../core/metrics"
 import type { ExperimentRun } from "../../core/types"
 import { discardRunChanges, keepRunChanges, preservedArtifactPaths } from "../git"
 import { appendJsonlEntry, loadAutoresearchSession, writeStateSnapshot } from "../storage"
@@ -8,6 +10,7 @@ import { runtimeStore } from "../runtime"
 export const logExperimentTool = tool({
   description: "Record the keep or discard decision for an experiment run and apply the matching git action when possible.",
   args: {
+    asi: tool.schema.string().optional(),
     decision: tool.schema.enum(["discard", "keep", "pending", "retry"]),
     runId: tool.schema.string().optional(),
     summary: tool.schema.string().optional(),
@@ -30,8 +33,11 @@ export const logExperimentTool = tool({
       return "Cannot keep a run whose checks failed."
     }
 
+    const asi = parseAsi(args.asi, run.asi)
+
     const updatedRun: ExperimentRun = {
       ...run,
+      asi,
       commit: undefined,
       decision: args.decision,
       status:
@@ -42,6 +48,13 @@ export const logExperimentTool = tool({
             : run.status,
       summary: args.summary ?? run.summary,
     }
+
+    const nextRuns = session.state.runs.map((item) => item.id === updatedRun.id ? updatedRun : item)
+    const confidence = computeSegmentConfidence(
+      currentSegmentRuns({ ...session.state, runs: nextRuns }, -1),
+      session.state.config?.primaryMetric,
+    )
+    updatedRun.confidence = confidence
 
     let gitOutput = "No git action was required."
     if (args.decision === "keep") {
@@ -88,11 +101,62 @@ export const logExperimentTool = tool({
     return {
       metadata: {
         commit: updatedRun.commit,
+        confidence: updatedRun.confidence,
         decision: updatedRun.decision,
         runId: updatedRun.id,
         status: updatedRun.status,
       },
-      output: [`Updated run #${updatedRun.iteration} to ${updatedRun.decision}.`, gitOutput].join("\n"),
+      output: [
+        `Updated run #${updatedRun.iteration} to ${updatedRun.decision}.`,
+        gitOutput,
+        formatAsiOutput(updatedRun.asi),
+        formatConfidenceOutput(updatedRun.confidence),
+      ].filter(Boolean).join("\n"),
     }
   },
 })
+
+function formatConfidenceOutput(confidence: number | null | undefined): string | undefined {
+  if (confidence == null) return undefined
+  if (confidence >= 2) return `Confidence: ${confidence.toFixed(1)}x noise floor — improvement is likely real.`
+  if (confidence >= 1) return `Confidence: ${confidence.toFixed(1)}x noise floor — improvement is above noise but still marginal.`
+  return `Confidence: ${confidence.toFixed(1)}x noise floor — this result is still within noise; rerun if you need to confirm it.`
+}
+
+function formatAsiOutput(asi: Record<string, unknown> | undefined): string | undefined {
+  if (!asi || Object.keys(asi).length === 0) return undefined
+
+  const parts = Object.entries(asi)
+    .map(([key, value]) => `${key}=${stringifyAsiValue(value)}`)
+  return `ASI: ${parts.join(" | ")}`
+}
+
+function parseAsi(value: string | undefined, existing: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!value?.trim()) return existing
+
+  try {
+    const parsed = JSON.parse(value) as unknown
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return {
+        ...(existing ?? {}),
+        ...(parsed as Record<string, unknown>),
+      }
+    }
+  } catch {
+    // Fall back to a plain string note.
+  }
+
+  return {
+    ...(existing ?? {}),
+    note: value.trim(),
+  }
+}
+
+function stringifyAsiValue(value: unknown): string {
+  if (typeof value === "string") return value
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}

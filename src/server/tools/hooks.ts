@@ -1,6 +1,7 @@
-import { chmod, writeFile } from "node:fs/promises"
+import { chmod, mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { tool } from "@opencode-ai/plugin"
+import { resolveAutoresearchHookPath, resolveAutoresearchPaths, resolveLegacyAutoresearchHookPath } from "../../core/paths"
 import { loadAutoresearchSession } from "../storage"
 import { runtimeStore } from "../runtime"
 
@@ -10,7 +11,7 @@ export interface HookScaffoldResult {
 }
 
 export const autoresearchHooksTool = tool({
-  description: "Create starter before.sh and after.sh hook scripts for autoresearch with the expected JSON stdin/stdout contract.",
+  description: "Create starter hook scripts in autoresearch.hooks/ with the expected JSON stdin/stdout contract.",
   args: {
     force: tool.schema.boolean().optional(),
     instructions: tool.schema.string().optional(),
@@ -48,17 +49,21 @@ export async function scaffoldHookFiles(input: {
   const created: string[] = []
   const skipped: string[] = []
   const kinds = input.kind === undefined || input.kind === "both" ? ["before", "after"] as const : [input.kind]
+  const paths = resolveAutoresearchPaths(input.workDir)
+
+  await mkdir(paths.hooksDirectory, { recursive: true })
 
   for (const kind of kinds) {
-    const filePath = path.join(input.workDir, `${kind}.sh`)
-    if (!input.force && (await Bun.file(filePath).exists())) {
-      skipped.push(`${kind}.sh`)
+    const filePath = resolveAutoresearchHookPath(paths, kind)
+    const legacyPath = resolveLegacyAutoresearchHookPath(paths, kind)
+    if (!input.force && ((await Bun.file(filePath).exists()) || (await Bun.file(legacyPath).exists()))) {
+      skipped.push(path.relative(input.workDir, (await Bun.file(filePath).exists()) ? filePath : legacyPath) || `${kind}.sh`)
       continue
     }
 
     await writeFile(filePath, hookTemplate(kind, input.instructions), "utf8")
     await chmod(filePath, 0o755)
-    created.push(`${kind}.sh`)
+    created.push(path.relative(input.workDir, filePath) || `${kind}.sh`)
   }
 
   return { created, skipped }

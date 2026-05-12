@@ -26,6 +26,10 @@ export async function createFixtureWorkspace(name: string): Promise<string> {
   await chmodIfPresent(path.join(target, "check.sh"))
   await chmodIfPresent(path.join(target, "before.sh"))
   await chmodIfPresent(path.join(target, "after.sh"))
+  await chmodIfPresent(path.join(target, "autoresearch.sh"))
+  await chmodIfPresent(path.join(target, "autoresearch.checks.sh"))
+  await chmodIfPresent(path.join(target, "autoresearch.hooks", "before.sh"))
+  await chmodIfPresent(path.join(target, "autoresearch.hooks", "after.sh"))
 
   await Bun.$`git init`.cwd(target).quiet()
   await Bun.$`git config user.email test@example.com`.cwd(target).quiet()

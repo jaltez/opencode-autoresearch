@@ -1,5 +1,13 @@
 import path from "node:path"
 import { tool } from "@opencode-ai/plugin"
+import { AUTORESEARCH_CANONICAL_COMMAND, isAutoresearchScriptCommand } from "../../core/session-config"
+import {
+  buildAutoresearchChecksScriptTemplate,
+  buildAutoresearchConfigTemplate,
+  buildAutoresearchIdeasTemplate,
+  buildAutoresearchNotesTemplate,
+  buildAutoresearchScriptTemplate,
+} from "../scaffold"
 import { appendJsonlEntry, ensureAutoresearchFiles, loadAutoresearchSession, writeStateSnapshot } from "../storage"
 import { runtimeStore } from "../runtime"
 import { scaffoldHookFiles } from "./hooks"
@@ -23,21 +31,31 @@ export const autoresearchCreateTool = tool({
     const workDir = args.workDir ?? runtimeStore.get(context.sessionID)?.workDir
     const session = await loadAutoresearchSession(context.directory, workDir)
     const defaultName = args.name ?? session.state.config?.name ?? path.basename(session.paths.directory)
-    const command = args.command ?? session.state.config?.command ?? (await inferDefaultCommand(context.directory))
+    const existingBenchmarkCommand = session.state.config?.benchmarkCommand
+      ?? (session.state.config?.command && !isAutoresearchScriptCommand(session.state.config.command)
+        ? session.state.config.command
+        : undefined)
+    const benchmarkCommand = args.command ?? existingBenchmarkCommand ?? (await inferDefaultCommand(context.directory))
+    const configuredWorkDir = args.workDir ?? session.state.config?.workDir
+    const configuredChecks = args.checks ?? session.state.config?.checks
 
     await ensureAutoresearchFiles(session.paths, {
-      ideas: [
-        "# Ideas",
-        "",
-        "- Capture experimental directions, discarded hypotheses, and next candidate changes here.",
-      ].join("\n"),
-      notes: [
-        "# Autoresearch",
-        "",
-        `- Session: ${defaultName}`,
-        `- Command: ${command ?? "<fill me in>"}`,
-        `- Primary metric: ${args.primaryMetric ?? session.state.config?.primaryMetric ?? "<fill me in>"}`,
-      ].join("\n"),
+      checksScript: buildAutoresearchChecksScriptTemplate(configuredChecks),
+      config: buildAutoresearchConfigTemplate({
+        maxIterations: args.maxIterations ?? session.state.config?.maxIterations,
+        workDir: configuredWorkDir,
+      }),
+      ideas: buildAutoresearchIdeasTemplate(),
+      notes: buildAutoresearchNotesTemplate({
+        command: benchmarkCommand,
+        name: defaultName,
+        objective: args.objective ?? session.state.config?.objective,
+        primaryMetric: args.primaryMetric ?? session.state.config?.primaryMetric,
+      }),
+      script: buildAutoresearchScriptTemplate({
+        command: benchmarkCommand,
+        primaryMetric: args.primaryMetric ?? session.state.config?.primaryMetric,
+      }),
     })
 
     const hookResult = args.createHooks
@@ -49,22 +67,24 @@ export const autoresearchCreateTool = tool({
       : undefined
 
     let initialized = false
-    if (command) {
+    if (benchmarkCommand) {
       const config = {
-        checks: args.checks ?? session.state.config?.checks,
-        command,
+        benchmarkCommand,
+        checks: configuredChecks,
+        command: AUTORESEARCH_CANONICAL_COMMAND,
         createdAt: session.state.config?.createdAt ?? new Date().toISOString(),
         maxIterations: args.maxIterations ?? session.state.config?.maxIterations,
         name: defaultName,
         objective: args.objective ?? session.state.config?.objective,
         primaryMetric: args.primaryMetric ?? session.state.config?.primaryMetric,
-        workDir: workDir ?? session.state.config?.workDir,
+        workDir: configuredWorkDir,
       }
 
       await appendJsonlEntry(session.paths, {
         at: new Date().toISOString(),
         config,
         mode: session.state.mode === "off" ? "active" : session.state.mode,
+        segment: (session.state.currentSegment ?? 0) + 1,
         type: "session",
       })
       initialized = true
@@ -78,7 +98,8 @@ export const autoresearchCreateTool = tool({
 
     return {
       metadata: {
-        command,
+        benchmarkCommand,
+        command: benchmarkCommand ? AUTORESEARCH_CANONICAL_COMMAND : undefined,
         hooks: hookResult,
         initialized,
         name: defaultName,
@@ -86,7 +107,9 @@ export const autoresearchCreateTool = tool({
       output: [
         `Prepared autoresearch scaffold for \"${defaultName}\".`,
         `Workdir: ${path.relative(context.directory, nextSession.paths.directory) || "."}`,
-        command ? `Command: ${command}` : "Command: not inferred; run init_experiment or rerun autoresearch_create with command=...",
+        benchmarkCommand
+          ? `Command: ${AUTORESEARCH_CANONICAL_COMMAND} (benchmark: ${benchmarkCommand})`
+          : "Command: not inferred; run init_experiment or rerun autoresearch_create with command=...",
         hookResult ? `Hooks: created ${hookResult.created.join(", ") || "none"}; skipped ${hookResult.skipped.join(", ") || "none"}` : "Hooks: unchanged",
       ].join("\n"),
     }

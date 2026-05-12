@@ -6,6 +6,6 @@ export async function exportDashboard(projectDir: string, configuredWorkDir?: st
     throw new Error("No autoresearch session found to export.")
   }
 
-  const filePath = await writeDashboard(session.paths, session.state, session.notesText, session.ideasText)
+  const filePath = await writeDashboard(session.paths, session.state, session.notesText, session.ideasText, projectDir)
   return { path: filePath }
 }

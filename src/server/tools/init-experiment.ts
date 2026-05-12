@@ -1,5 +1,13 @@
 import path from "node:path"
 import { tool } from "@opencode-ai/plugin"
+import { AUTORESEARCH_CANONICAL_COMMAND } from "../../core/session-config"
+import {
+  buildAutoresearchChecksScriptTemplate,
+  buildAutoresearchConfigTemplate,
+  buildAutoresearchIdeasTemplate,
+  buildAutoresearchNotesTemplate,
+  buildAutoresearchScriptTemplate,
+} from "../scaffold"
 import { appendJsonlEntry, ensureAutoresearchFiles, loadAutoresearchSession, writeStateSnapshot } from "../storage"
 import { runtimeStore } from "../runtime"
 
@@ -19,9 +27,11 @@ export const initExperimentTool = tool({
 
     const workDir = args.workDir ?? runtimeStore.get(context.sessionID)?.workDir
     const session = await loadAutoresearchSession(context.directory, workDir)
+    const benchmarkCommand = args.command
     const config = {
+      benchmarkCommand,
       checks: args.checks,
-      command: args.command,
+      command: AUTORESEARCH_CANONICAL_COMMAND,
       createdAt: session.state.config?.createdAt ?? new Date().toISOString(),
       maxIterations: args.maxIterations,
       name: args.name,
@@ -31,14 +41,29 @@ export const initExperimentTool = tool({
     }
 
     await ensureAutoresearchFiles(session.paths, {
-      ideas: ["# Ideas", "", "- Capture candidate experiments here."].join("\n"),
-      notes: ["# Autoresearch", "", `- Session: ${args.name}`, `- Command: ${args.command}`].join("\n"),
+      checksScript: buildAutoresearchChecksScriptTemplate(args.checks),
+      config: buildAutoresearchConfigTemplate({
+        maxIterations: args.maxIterations,
+        workDir: args.workDir,
+      }),
+      ideas: buildAutoresearchIdeasTemplate(),
+      notes: buildAutoresearchNotesTemplate({
+        command: benchmarkCommand,
+        name: args.name,
+        objective: args.objective,
+        primaryMetric: args.primaryMetric,
+      }),
+      script: buildAutoresearchScriptTemplate({
+        command: benchmarkCommand,
+        primaryMetric: args.primaryMetric,
+      }),
     })
 
     await appendJsonlEntry(session.paths, {
       at: new Date().toISOString(),
       config,
       mode: "active",
+      segment: (session.state.currentSegment ?? 0) + 1,
       type: "session",
     })
 
@@ -55,7 +80,7 @@ export const initExperimentTool = tool({
       output: [
         `Initialized autoresearch session \"${args.name}\".`,
         `Workdir: ${path.relative(context.directory, nextSession.paths.directory) || "."}`,
-        `Command: ${args.command}`,
+        `Command: ${AUTORESEARCH_CANONICAL_COMMAND} (benchmark: ${benchmarkCommand})`,
       ].join("\n"),
     }
   },

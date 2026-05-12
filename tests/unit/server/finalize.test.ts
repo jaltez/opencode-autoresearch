@@ -5,7 +5,7 @@ describe("finalize plan", () => {
   it("groups overlapping kept runs together and separates non-overlapping ones", () => {
     const plan = buildFinalizePlan([
       {
-        changes: { modified: ["src/a.ts"], untracked: [] },
+        changes: { modified: ["src/a.ts", "autoresearch.jsonl"], untracked: [] },
         command: "cmd",
         commit: "aaa111",
         decision: "keep",
@@ -44,6 +44,7 @@ describe("finalize plan", () => {
 
     expect(plan.groups).toHaveLength(2)
     expect(plan.groups[0]?.commits).toEqual(["aaa111", "bbb222"])
+    expect(plan.groups[0]?.files).toEqual(["src/a.ts", "src/common.ts"])
     expect(plan.groups[1]?.commits).toEqual(["ccc333"])
   })
 })

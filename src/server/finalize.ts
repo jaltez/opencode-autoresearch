@@ -1,3 +1,4 @@
+import { isAutoresearchArtifactPath } from "../core/paths"
 import type { ExperimentRun } from "../core/types"
 
 export interface FinalizeCandidate {
@@ -35,8 +36,10 @@ export function buildFinalizePlan(runs: readonly ExperimentRun[], prefix = "auto
     }
 
     const files = unique([...(run.changes?.modified ?? []), ...(run.changes?.untracked ?? [])])
+      .filter((filePath) => !isAutoresearchArtifactPath(filePath))
     if (files.length === 0) {
-      warnings.push(`Run #${run.iteration} was kept but has no recorded file list.`)
+      warnings.push(`Run #${run.iteration} was kept but has no non-artifact file list.`)
+      continue
     }
 
     candidates.push({

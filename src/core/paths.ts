@@ -1,21 +1,44 @@
 import path from "node:path"
 
-export const AUTORESEARCH_FILENAMES = {
-  dashboard: "autoresearch.dashboard.html",
+export const AUTORESEARCH_SESSION_FILENAMES = {
+  checks: "autoresearch.checks.sh",
+  config: "autoresearch.config.json",
   ideas: "autoresearch.ideas.md",
   jsonl: "autoresearch.jsonl",
   notes: "autoresearch.md",
+  script: "autoresearch.sh",
+} as const
+
+export const AUTORESEARCH_DERIVED_FILENAMES = {
+  dashboard: "autoresearch.dashboard.html",
   state: "autoresearch.state.json",
 } as const
 
+export const AUTORESEARCH_FILENAMES = {
+  ...AUTORESEARCH_SESSION_FILENAMES,
+  ...AUTORESEARCH_DERIVED_FILENAMES,
+} as const
+
+export const AUTORESEARCH_HOOKS_DIRECTORY = "autoresearch.hooks"
+
+export const AUTORESEARCH_HOOK_FILENAMES = {
+  after: "after.sh",
+  before: "before.sh",
+} as const
+
 export type AutoresearchFileKind = keyof typeof AUTORESEARCH_FILENAMES
+export type AutoresearchHookKind = keyof typeof AUTORESEARCH_HOOK_FILENAMES
 
 export interface ResolvedAutoresearchPaths {
+  checks: string
+  config: string
   dashboard: string
   directory: string
+  hooksDirectory: string
   ideas: string
   jsonl: string
   notes: string
+  script: string
   state: string
 }
 
@@ -29,13 +52,44 @@ export function resolveAutoresearchPaths(projectDir: string, configuredWorkDir?:
   const directory = resolveWorkDir(projectDir, configuredWorkDir)
 
   return {
+    checks: path.join(directory, AUTORESEARCH_SESSION_FILENAMES.checks),
+    config: path.join(directory, AUTORESEARCH_SESSION_FILENAMES.config),
     dashboard: path.join(directory, AUTORESEARCH_FILENAMES.dashboard),
     directory,
+    hooksDirectory: path.join(directory, AUTORESEARCH_HOOKS_DIRECTORY),
     ideas: path.join(directory, AUTORESEARCH_FILENAMES.ideas),
     jsonl: path.join(directory, AUTORESEARCH_FILENAMES.jsonl),
     notes: path.join(directory, AUTORESEARCH_FILENAMES.notes),
+    script: path.join(directory, AUTORESEARCH_SESSION_FILENAMES.script),
     state: path.join(directory, AUTORESEARCH_FILENAMES.state),
   }
+}
+
+export function resolveAutoresearchHookPath(paths: ResolvedAutoresearchPaths, kind: AutoresearchHookKind): string {
+  return path.join(paths.hooksDirectory, AUTORESEARCH_HOOK_FILENAMES[kind])
+}
+
+export function resolveLegacyAutoresearchHookPath(paths: ResolvedAutoresearchPaths, kind: AutoresearchHookKind): string {
+  return path.join(paths.directory, AUTORESEARCH_HOOK_FILENAMES[kind])
+}
+
+export function autoresearchHookCandidates(paths: ResolvedAutoresearchPaths, kind: AutoresearchHookKind): string[] {
+  return [resolveAutoresearchHookPath(paths, kind), resolveLegacyAutoresearchHookPath(paths, kind)]
+}
+
+export function listAutoresearchArtifactPaths(): string[] {
+  return [...new Set([
+    ...Object.values(AUTORESEARCH_FILENAMES),
+    ...Object.values(AUTORESEARCH_HOOK_FILENAMES),
+    ...Object.values(AUTORESEARCH_HOOK_FILENAMES).map((fileName) => `${AUTORESEARCH_HOOKS_DIRECTORY}/${fileName}`),
+  ])]
+}
+
+export function isAutoresearchArtifactPath(filePath: string): boolean {
+  const normalized = normalizeArtifactPath(filePath)
+  if (!normalized) return false
+  if (listAutoresearchArtifactPaths().includes(normalized)) return true
+  return normalized.startsWith(`${AUTORESEARCH_HOOKS_DIRECTORY}/`)
 }
 
 export async function resolveExistingAutoresearchPaths(
@@ -95,4 +149,8 @@ async function findFirstMatchingFile(projectDir: string, fileName: string): Prom
   })
 
   return matches[0]
+}
+
+function normalizeArtifactPath(filePath: string): string {
+  return filePath.replaceAll("\\", "/").replace(/^\.?\//u, "")
 }

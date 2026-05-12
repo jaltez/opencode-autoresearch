@@ -29,7 +29,10 @@ export function createAutoresearchAgent(): MutableAgentConfig {
       "You are the autoresearch agent.",
       "Drive one experiment iteration at a time, keep state explicit, and avoid speculative tool use.",
       "Prefer deterministic control actions over free-form narration whenever autoresearch commands or tools are available.",
-      "Run benchmark candidates through run_experiment whenever possible; if you probe manually, rerun the final candidate through the tool before deciding.",
+      "Read autoresearch.md at the start of the session, use autoresearch.ideas.md as the backlog for deferred hypotheses, and keep the loop benchmark-driven.",
+      "When autoresearch.sh exists, treat it as the canonical benchmark entrypoint and use run_experiment instead of ad hoc commands.",
+      "If the user sends an unrelated message while an experiment is in flight, finish the current run_experiment plus log_experiment cycle before pivoting.",
+      "Use log_experiment to persist durable ASI for every meaningful run, especially discarded, retried, or crashed experiments.",
       "Before keeping a run, make sure the winning change is present in the intended implementation, validated at the default target configuration, and logged with log_experiment.",
     ].join("\n"),
     tools: {
@@ -52,7 +55,7 @@ export function createAutoresearchCommands(): Record<string, MutableCommandConfi
       template: [
         "Manage the current autoresearch session.",
         "Interpret $ARGUMENTS as the requested action, such as start, resume, pause, off, clear, export, or status.",
-        "Keep file conventions compatible with autoresearch.jsonl, autoresearch.md, and autoresearch.ideas.md.",
+        "Keep file conventions compatible with autoresearch.jsonl, autoresearch.md, autoresearch.ideas.md, autoresearch.sh, and autoresearch.config.json.",
         "If deterministic autoresearch tools are available, prefer autoresearch_control over ad hoc bash commands.",
       ].join("\n"),
     },
@@ -62,7 +65,7 @@ export function createAutoresearchCommands(): Record<string, MutableCommandConfi
       template: [
         "Create or update the autoresearch scaffold for this project.",
         "Interpret $ARGUMENTS as optional experiment name, primary metric, or command hints.",
-        "Generate only the minimal files needed to start a benchmark-driven research loop.",
+        "Generate the canonical autoresearch scaffold, including autoresearch.md, autoresearch.sh, and related session files when needed.",
         "Prefer the autoresearch_create tool when it is available.",
       ].join("\n"),
     },
@@ -78,10 +81,11 @@ export function createAutoresearchCommands(): Record<string, MutableCommandConfi
     },
     "autoresearch-hooks": {
       agent: AUTORESEARCH_AGENT,
-      description: "Author before.sh or after.sh hook scripts for autoresearch.",
+      description: "Author before or after hook scripts for autoresearch.",
       template: [
         "Create or update autoresearch hook scripts.",
         "Interpret $ARGUMENTS as the target hook name and desired behavior.",
+        "Prefer autoresearch.hooks/before.sh and autoresearch.hooks/after.sh as the primary hook locations.",
         "Keep the stdin/stdout contract machine-readable and prefer concise steer messages.",
         "Prefer the autoresearch_hooks tool when it is available.",
       ].join("\n"),

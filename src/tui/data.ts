@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises"
 import { reconstructJsonlState } from "../core/jsonl"
+import { normalizeAutoresearchState } from "../core/session-config"
 import {
   resolveExistingAutoresearchPaths,
   type ResolvedAutoresearchPaths,
@@ -27,7 +28,7 @@ export async function loadAutoresearchWorkspaceSnapshot(
     readOptionalText(paths.ideas),
   ])
 
-  const state = parseStateSnapshot(stateText) ?? reconstructJsonlState(jsonlText ?? "")
+  const state = await normalizeAutoresearchState(paths, parseStateSnapshot(stateText) ?? reconstructJsonlState(jsonlText ?? ""))
   if (!state.config && state.runs.length === 0 && state.hooks.length === 0 && state.notes.length === 0) {
     return undefined
   }

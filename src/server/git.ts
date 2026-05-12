@@ -1,5 +1,6 @@
 import { access } from "node:fs/promises"
 import path from "node:path"
+import { isAutoresearchArtifactPath, listAutoresearchArtifactPaths } from "../core/paths"
 import type { ExperimentRun } from "../core/types"
 
 export interface GitChanges {
@@ -36,8 +37,8 @@ export async function keepRunChanges(cwd: string, run: ExperimentRun, preservedP
     return { output: "Skipping commit because the workdir is not a git repository." }
   }
 
-  const trackedPaths = run.changes?.modified.filter((item) => !preservedPaths.includes(item)) ?? []
-  const untrackedPaths = run.changes?.untracked.filter((item) => !preservedPaths.includes(item)) ?? []
+  const trackedPaths = run.changes?.modified.filter((item) => !preservedPaths.includes(item) && !isAutoresearchArtifactPath(item)) ?? []
+  const untrackedPaths = run.changes?.untracked.filter((item) => !preservedPaths.includes(item) && !isAutoresearchArtifactPath(item)) ?? []
   const paths = [...trackedPaths, ...untrackedPaths]
   if (paths.length === 0) {
     return { output: "No non-artifact changes were recorded for this run." }
@@ -66,8 +67,8 @@ export async function discardRunChanges(cwd: string, run: ExperimentRun, preserv
     return "Skipping discard because the workdir is not a git repository."
   }
 
-  const trackedPaths = run.changes?.modified.filter((item) => !preservedPaths.includes(item)) ?? []
-  const untrackedPaths = run.changes?.untracked.filter((item) => !preservedPaths.includes(item)) ?? []
+  const trackedPaths = run.changes?.modified.filter((item) => !preservedPaths.includes(item) && !isAutoresearchArtifactPath(item)) ?? []
+  const untrackedPaths = run.changes?.untracked.filter((item) => !preservedPaths.includes(item) && !isAutoresearchArtifactPath(item)) ?? []
   const outputs: string[] = []
 
   if (trackedPaths.length > 0) {
@@ -91,13 +92,7 @@ export async function discardRunChanges(cwd: string, run: ExperimentRun, preserv
 }
 
 export function preservedArtifactPaths(workDir: string): string[] {
-  return [
-    "autoresearch.dashboard.html",
-    "autoresearch.ideas.md",
-    "autoresearch.jsonl",
-    "autoresearch.md",
-    "autoresearch.state.json",
-  ].map((item) => path.relative(workDir, path.join(workDir, item)) || item)
+  return listAutoresearchArtifactPaths().map((item) => path.relative(workDir, path.join(workDir, item)) || item)
 }
 
 async function runCommand(cwd: string, command: string): Promise<GitCommandResult> {
@@ -133,7 +128,7 @@ function parseGitStatus(output: string, preservedPaths: readonly string[]): GitC
     if (!record) continue
     const status = record.slice(0, 2)
     const filePath = normalizeGitPath(record.slice(3))
-    if (!filePath || preservedPaths.includes(filePath)) continue
+    if (!filePath || preservedPaths.includes(filePath) || isAutoresearchArtifactPath(filePath)) continue
 
     if (status === "??") {
       untracked.add(filePath)

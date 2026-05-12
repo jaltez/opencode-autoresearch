@@ -1,4 +1,4 @@
-import type { MetricValue, SecondaryMetricRegistry } from "./types"
+import type { ExperimentRun, MetricValue, SecondaryMetricRegistry } from "./types"
 
 const METRIC_PATTERN =
   /^METRIC\s+([A-Za-z0-9_.-]+)\s*(?:=|:)?\s*(-?(?:\d+(?:\.\d+)?|\.\d+))(?:\s*([%A-Za-z][\w/%.-]*))?(?:\s+(higher|lower))?\s*$/i
@@ -74,6 +74,53 @@ export function registerSecondaryMetrics(
   return next
 }
 
+export function findPrimaryMetric(metrics: readonly MetricValue[], primaryMetricName?: string): MetricValue | undefined {
+  if (metrics.length === 0) return undefined
+  if (!primaryMetricName) return metrics[0]
+
+  const exact = metrics.find((metric) => metric.name === primaryMetricName)
+  if (exact) return exact
+
+  const normalized = primaryMetricName.toLowerCase()
+  return metrics.find((metric) => metric.name.toLowerCase() === normalized) ?? metrics[0]
+}
+
+export function isBetterMetricValue(candidate: MetricValue, incumbent: MetricValue): boolean {
+  const higherIsBetter = candidate.higherIsBetter ?? incumbent.higherIsBetter ?? inferHigherIsBetter(candidate.name)
+  return higherIsBetter ? candidate.value > incumbent.value : candidate.value < incumbent.value
+}
+
+export function computeSegmentConfidence(
+  runs: readonly ExperimentRun[],
+  primaryMetricName?: string,
+): number | null {
+  const series = runs
+    .map((run) => ({
+      metric: findPrimaryMetric(run.metrics, primaryMetricName),
+      run,
+    }))
+    .filter((entry): entry is { metric: MetricValue; run: ExperimentRun } => Boolean(entry.metric && Number.isFinite(entry.metric.value)))
+
+  if (series.length < 3) return null
+
+  const baseline = series[0].metric
+  let bestKept: MetricValue | undefined
+  for (const entry of series) {
+    if (entry.run.decision !== "keep" && entry.run.status !== "kept") continue
+    if (!bestKept || isBetterMetricValue(entry.metric, bestKept)) {
+      bestKept = entry.metric
+    }
+  }
+
+  if (!bestKept || bestKept.value === baseline.value) return null
+
+  const values = series.map((entry) => entry.metric.value)
+  const mad = computeMedianAbsoluteDeviation(values)
+  if (mad === 0) return null
+
+  return Math.abs(bestKept.value - baseline.value) / mad
+}
+
 export function computeConfidence(values: readonly number[]): number {
   const samples = values.filter((value) => Number.isFinite(value))
   if (samples.length === 0) return 0
@@ -106,6 +153,11 @@ function computeMedian(values: readonly number[]): number {
   const midpoint = Math.floor(sorted.length / 2)
   if (sorted.length % 2 === 0) return (sorted[midpoint - 1] + sorted[midpoint]) / 2
   return sorted[midpoint]
+}
+
+function computeMedianAbsoluteDeviation(values: readonly number[]): number {
+  const median = computeMedian(values)
+  return computeMedian(values.map((value) => Math.abs(value - median)))
 }
 
 function computeStandardDeviation(values: readonly number[]): number {

@@ -3,7 +3,7 @@ import path from "node:path"
 import type { TuiPluginModule } from "@opencode-ai/plugin/tui"
 import { For, Show, createEffect, createSignal, onCleanup } from "solid-js"
 import { loadAutoresearchWorkspaceSnapshot } from "./data"
-import { buildAutoresearchTuiViewModel } from "./view-model"
+import { buildAutoresearchTuiViewModel, type AutoresearchTuiViewModel } from "./view-model"
 
 const SIDEBAR_POLL_MS = 2_000
 const DASHBOARD_ROUTE = "autoresearch-dashboard"
@@ -177,11 +177,19 @@ function AutoresearchSidebar(props: { projectDir: string }) {
               <text fg="#d5c8a2" wrapMode="word">{model()?.objective}</text>
             </Show>
             <text fg="#8dcf9f">Mode: {model()?.mode}</text>
+            <text fg="#8dcf9f">Segment: {model()?.currentSegment}</text>
             <text fg="#aab5c4">Workdir: {model()?.relativeWorkDir}</text>
             <Show when={model()?.command}>
               <text fg="#aab5c4" wrapMode="word">Command: {model()?.command}</text>
             </Show>
+            <Show when={model()?.benchmarkCommand}>
+              <text fg="#aab5c4" wrapMode="word">Benchmark: {model()?.benchmarkCommand}</text>
+            </Show>
           </box>
+
+          <Show when={model()}>
+            {(resolved: () => AutoresearchTuiViewModel) => <AutoresearchSignalCard model={resolved()} />}
+          </Show>
 
           <box border borderColor="#3d3d3d" flexDirection="column" gap={1} padding={1} title="Runs">
             <text fg="#f3ede2">
@@ -189,14 +197,23 @@ function AutoresearchSidebar(props: { projectDir: string }) {
             </text>
             <Show when={model()?.latestRun} fallback={<text fg="#aab5c4">No runs recorded yet.</text>}>
               <text fg="#d6dde6">
-                Latest #{model()?.latestRun?.iteration} · {model()?.latestRun?.status} · {model()?.latestRun?.decision}
+                Latest #{model()?.latestRun?.iteration} · s{model()?.latestRun?.segment} · {model()?.latestRun?.status} · {model()?.latestRun?.decision}
               </text>
               <text fg="#d5c8a2" wrapMode="word">Metrics: {model()?.latestRun?.metrics}</text>
               <Show when={model()?.latestRun?.changedFiles !== undefined}>
                 <text fg="#aab5c4">Changed files: {model()?.latestRun?.changedFiles}</text>
               </Show>
+              <Show when={model()?.latestRun?.confidence}>
+                <text fg="#8dcf9f">Confidence: {model()?.latestRun?.confidence}</text>
+              </Show>
               <Show when={model()?.latestRun?.summary}>
                 <text fg="#f3ede2" wrapMode="word">{model()?.latestRun?.summary}</text>
+              </Show>
+              <Show when={model()?.latestRun?.asiSummary}>
+                <text fg="#d5c8a2" wrapMode="word">ASI: {model()?.latestRun?.asiSummary}</text>
+              </Show>
+              <Show when={model()?.latestRun?.nextActionHint}>
+                <text fg="#d5c8a2" wrapMode="word">Next: {model()?.latestRun?.nextActionHint}</text>
               </Show>
             </Show>
           </box>
@@ -252,6 +269,10 @@ function AutoresearchDashboard(props: { projectDir: string }) {
             </Show>
           </box>
 
+          <Show when={model()}>
+            {(resolved: () => AutoresearchTuiViewModel) => <AutoresearchSignalCard model={resolved()} />}
+          </Show>
+
           <box border borderColor="#3d3d3d" flexDirection="column" gap={1} padding={1} title="Summary">
             <text fg="#d6dde6" wrapMode="word">{model()?.summaryText ?? ""}</text>
           </box>
@@ -272,6 +293,49 @@ function SidebarEmptyState(props: { projectDir: string }) {
       <text fg="#aab5c4" wrapMode="word">
         Initialize a session in {path.basename(props.projectDir)} with /autoresearch-create or init_experiment.
       </text>
+    </box>
+  )
+}
+
+function AutoresearchSignalCard(props: { model: AutoresearchTuiViewModel }) {
+  return (
+    <box border borderColor="#3d3d3d" flexDirection="column" gap={1} padding={1} title="Signal">
+      <text fg="#f3ede2">
+        Segment {props.model.currentSegment} · {props.model.currentSegmentRunCount} run{props.model.currentSegmentRunCount === 1 ? "" : "s"}
+      </text>
+      <text fg="#8dcf9f">Confidence: {props.model.segmentConfidence}</text>
+      <Show when={props.model.baselineRun} fallback={<text fg="#aab5c4">Baseline: not established yet.</text>}>
+        {(run: () => NonNullable<AutoresearchTuiViewModel["baselineRun"]>) => <AutoresearchSignalRun label="Baseline" run={run()} />}
+      </Show>
+      <Show when={props.model.bestRun} fallback={<text fg="#aab5c4">Best kept: none yet.</text>}>
+        {(run: () => NonNullable<AutoresearchTuiViewModel["baselineRun"]>) => <AutoresearchSignalRun label="Best kept" run={run()} />}
+      </Show>
+      <Show when={props.model.nextActionHint}>
+        <text fg="#d5c8a2" wrapMode="word">Next: {props.model.nextActionHint}</text>
+      </Show>
+    </box>
+  )
+}
+
+function AutoresearchSignalRun(props: {
+  label: string
+  run: NonNullable<AutoresearchTuiViewModel["baselineRun"]>
+}) {
+  return (
+    <box flexDirection="column" gap={0}>
+      <text fg="#d6dde6">{props.label}: #{props.run.iteration} · s{props.run.segment} · {props.run.metric}</text>
+      <Show when={props.run.relativeChange}>
+        <text fg="#8dcf9f">{props.run.relativeChange}</text>
+      </Show>
+      <Show when={props.run.confidence}>
+        <text fg="#aab5c4">Confidence: {props.run.confidence}</text>
+      </Show>
+      <Show when={props.run.summary}>
+        <text fg="#f3ede2" wrapMode="word">{props.run.summary}</text>
+      </Show>
+      <Show when={props.run.asiSummary}>
+        <text fg="#d5c8a2" wrapMode="word">ASI: {props.run.asiSummary}</text>
+      </Show>
     </box>
   )
 }
