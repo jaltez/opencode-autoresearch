@@ -2,9 +2,10 @@ import path from "node:path"
 import { spawn } from "node:child_process"
 import { tool } from "@opencode-ai/plugin"
 import { Effect } from "effect"
+import { evaluateMetricCheckExpression } from "../../core/checks"
 import { parseMetricLines } from "../../core/metrics"
 import { createHookInvocation, DEFAULT_HOOK_TIMEOUT_MS } from "../../core/hooks"
-import type { ExperimentCheckResult, ExperimentRun, HookInvocation, RunStatus } from "../../core/types"
+import type { ExperimentCheckResult, ExperimentRun, HookInvocation, MetricValue, RunStatus } from "../../core/types"
 import { preservedArtifactPaths, captureGitChanges } from "../git"
 import { appendJsonlEntry, loadAutoresearchSession, writeStateSnapshot } from "../storage"
 import { runtimeStore } from "../runtime"
@@ -20,7 +21,8 @@ export function createRunExperimentTool() {
     async execute(args, context) {
       context.metadata({ title: "Run autoresearch experiment" })
 
-      const session = await loadAutoresearchSession(context.directory, args.workDir)
+      const workDir = args.workDir ?? runtimeStore.get(context.sessionID)?.workDir
+      const session = await loadAutoresearchSession(context.directory, workDir)
       const config = session.state.config
       if (!config) {
         return "No autoresearch session is configured yet. Run init_experiment first."
@@ -51,7 +53,7 @@ export function createRunExperimentTool() {
 
       const commandResult = await runShellCommand(session.paths.directory, command, context.abort)
       const metrics = parseMetricLines(commandResult.output)
-      const checks = await runChecks(session.paths.directory, config.checks ?? [], context.abort)
+  const checks = await runChecks(session.paths.directory, config.checks ?? [], metrics, context.abort)
       const hasFailedCheck = checks.some((item) => !item.passed)
       const status: RunStatus = hasFailedCheck ? "checks_failed" : commandResult.exitCode === 0 ? "completed" : "failed"
       const changes = await captureGitChanges(session.paths.directory, preservedArtifactPaths(session.paths.directory))
@@ -86,7 +88,7 @@ export function createRunExperimentTool() {
         await appendJsonlEntry(session.paths, { at: afterHook.at, hook: afterHook, type: "hook" })
       }
 
-      const nextSession = await loadAutoresearchSession(context.directory, args.workDir)
+      const nextSession = await loadAutoresearchSession(context.directory, workDir)
       await writeStateSnapshot(nextSession.paths, nextSession.state)
 
       const reachedMaxIterations = config.maxIterations ? iteration >= config.maxIterations : false
@@ -120,9 +122,20 @@ export function createRunExperimentTool() {
   })
 }
 
-async function runChecks(cwd: string, checks: readonly string[], signal: AbortSignal): Promise<ExperimentCheckResult[]> {
+async function runChecks(
+  cwd: string,
+  checks: readonly string[],
+  metrics: readonly MetricValue[],
+  signal: AbortSignal,
+): Promise<ExperimentCheckResult[]> {
   const results: ExperimentCheckResult[] = []
   for (const command of checks) {
+    const metricCheck = evaluateMetricCheckExpression(command, metrics)
+    if (metricCheck) {
+      results.push(metricCheck)
+      continue
+    }
+
     const result = await runShellCommand(cwd, command, signal)
     results.push({
       command,

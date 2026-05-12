@@ -2,7 +2,7 @@ import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/prom
 import path from "node:path"
 import { buildAutoresearchCompactionSummary } from "../core/compaction"
 import { reconstructJsonlState, serializeJsonlEntry } from "../core/jsonl"
-import { resolveAutoresearchPaths, type ResolvedAutoresearchPaths } from "../core/paths"
+import { resolveExistingAutoresearchPaths, type ResolvedAutoresearchPaths } from "../core/paths"
 import type { AutoresearchJsonlEntry, AutoresearchState } from "../core/types"
 
 export interface LoadedAutoresearchSession {
@@ -13,7 +13,7 @@ export interface LoadedAutoresearchSession {
 }
 
 export async function loadAutoresearchSession(projectDir: string, configuredWorkDir?: string): Promise<LoadedAutoresearchSession> {
-  const paths = resolveAutoresearchPaths(projectDir, configuredWorkDir)
+  const paths = await resolveExistingAutoresearchPaths(projectDir, configuredWorkDir)
   const [jsonlText, notesText, ideasText] = await Promise.all([
     readOptionalText(paths.jsonl),
     readOptionalText(paths.notes),

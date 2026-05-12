@@ -14,6 +14,30 @@ afterEach(() => {
 })
 
 describe("server tools integration", () => {
+  it("evaluates metric threshold checks without shell redirection artifacts", async () => {
+    const workspace = await createFixtureWorkspace("stable-benchmark")
+    const context = createToolContext(workspace)
+    const runExperimentTool = createRunExperimentTool()
+
+    await initExperimentTool.execute(
+      {
+        checks: ["accuracy > 0.90"],
+        command: "./benchmark.sh",
+        name: "stable-benchmark",
+        objective: "Accept only runs above the target accuracy.",
+        primaryMetric: "accuracy",
+      },
+      context,
+    )
+
+    await runExperimentTool.execute({}, context)
+    const sessionAfterRun = await loadAutoresearchSession(workspace)
+    expect(sessionAfterRun.state.runs[0]?.status).toBe("completed")
+    expect(sessionAfterRun.state.runs[0]?.checks?.[0]?.passed).toBe(true)
+    expect(sessionAfterRun.state.runs[0]?.changes?.untracked).not.toContain("0.90")
+    expect(await Bun.file(path.join(workspace, "0.90")).exists()).toBe(false)
+  })
+
   it("keeps a successful run and commits only recorded changes", async () => {
     const workspace = await createFixtureWorkspace("stable-benchmark")
     const context = createToolContext(workspace)
@@ -56,6 +80,36 @@ describe("server tools integration", () => {
     expect(appText.trim()).toBe("optimized")
     expect(context.asked).toHaveLength(2)
     expect(context.asked[1]?.patterns).toEqual(["git commit"])
+  })
+
+  it("can log a nested-workdir run after runtime state is lost", async () => {
+    const workspace = await createFixtureWorkspace("stable-benchmark")
+    const context = createToolContext(workspace)
+    const runExperimentTool = createRunExperimentTool()
+    const benchmarkCommand = path.join(workspace, "benchmark.sh")
+    const checkCommand = path.join(workspace, "check.sh")
+
+    await initExperimentTool.execute(
+      {
+        checks: [checkCommand],
+        command: benchmarkCommand,
+        name: "nested-workdir",
+        objective: "Keep working even if runtime workdir state is gone.",
+        primaryMetric: "accuracy",
+        workDir: "experiments/session-a",
+      },
+      context,
+    )
+
+    await runExperimentTool.execute({}, context)
+    runtimeStore.clear(context.sessionID)
+
+    const logResult = await logExperimentTool.execute({ decision: "keep", summary: "Recovered via session discovery." }, context)
+    expect(typeof logResult).toBe("object")
+
+    const nestedSession = await loadAutoresearchSession(workspace, "experiments/session-a")
+    expect(nestedSession.state.runs[0]?.decision).toBe("keep")
+    expect(nestedSession.state.runs[0]?.status).toBe("kept")
   })
 
   it("marks checks failure, blocks keep, and discards changes back to baseline", async () => {

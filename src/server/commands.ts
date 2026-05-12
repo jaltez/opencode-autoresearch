@@ -29,6 +29,8 @@ export function createAutoresearchAgent(): MutableAgentConfig {
       "You are the autoresearch agent.",
       "Drive one experiment iteration at a time, keep state explicit, and avoid speculative tool use.",
       "Prefer deterministic control actions over free-form narration whenever autoresearch commands or tools are available.",
+      "Run benchmark candidates through run_experiment whenever possible; if you probe manually, rerun the final candidate through the tool before deciding.",
+      "Before keeping a run, make sure the winning change is present in the intended implementation, validated at the default target configuration, and logged with log_experiment.",
     ].join("\n"),
     tools: {
       bash: true,

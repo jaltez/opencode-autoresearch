@@ -2,6 +2,7 @@ import { chmod, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { tool } from "@opencode-ai/plugin"
 import { loadAutoresearchSession } from "../storage"
+import { runtimeStore } from "../runtime"
 
 export interface HookScaffoldResult {
   created: string[]
@@ -18,7 +19,8 @@ export const autoresearchHooksTool = tool({
   },
   async execute(args, context) {
     context.metadata({ title: "Scaffold autoresearch hooks" })
-    const session = await loadAutoresearchSession(context.directory, args.workDir)
+    const workDir = args.workDir ?? runtimeStore.get(context.sessionID)?.workDir
+    const session = await loadAutoresearchSession(context.directory, workDir)
     const result = await scaffoldHookFiles({
       force: args.force ?? false,
       instructions: args.instructions,

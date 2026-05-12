@@ -56,7 +56,8 @@ const plugin: PluginModule = {
       },
       "experimental.chat.system.transform": async ({ sessionID }, output) => {
         if (!sessionID) return
-        const session = await loadAutoresearchSession(input.directory)
+        const runtime = runtimeStore.get(sessionID)
+        const session = await loadAutoresearchSession(input.directory, runtime?.workDir)
         if (!session.state.config) return
 
         output.system.push(
@@ -65,6 +66,8 @@ const plugin: PluginModule = {
             `Mode: ${session.state.mode}.`,
             `Session name: ${session.state.config.name}.`,
             `Primary command: ${session.state.config.command}.`,
+            "Run benchmark candidates through run_experiment whenever possible; if you probe manually, rerun the final candidate through the tool before deciding.",
+            "Before keeping a run, ensure the winning change is applied to the intended implementation, rerun validation at the default target configuration, then log the decision.",
             "Prefer the autoresearch tools for initialization, running benchmarks, logging keep or discard decisions, and session control.",
           ].join(" "),
         )

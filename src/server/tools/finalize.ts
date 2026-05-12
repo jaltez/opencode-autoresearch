@@ -3,6 +3,7 @@ import { Effect } from "effect"
 import { buildFinalizePlan, renderFinalizePlan } from "../finalize"
 import { loadAutoresearchSession } from "../storage"
 import { isGitRepository } from "../git"
+import { runtimeStore } from "../runtime"
 
 export const autoresearchFinalizeTool = tool({
   description: "Plan or create review branches from kept autoresearch runs, grouped by non-overlapping file changes.",
@@ -14,7 +15,8 @@ export const autoresearchFinalizeTool = tool({
   async execute(args, context) {
     context.metadata({ title: "Finalize autoresearch runs" })
 
-    const session = await loadAutoresearchSession(context.directory, args.workDir)
+    const workDir = args.workDir ?? runtimeStore.get(context.sessionID)?.workDir
+    const session = await loadAutoresearchSession(context.directory, workDir)
     const plan = buildFinalizePlan(session.state.runs, args.prefix)
     if (plan.groups.length === 0) {
       return renderFinalizePlan(plan)

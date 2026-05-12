@@ -16,7 +16,8 @@ export const logExperimentTool = tool({
   async execute(args, context) {
     context.metadata({ title: "Log autoresearch decision" })
 
-    const session = await loadAutoresearchSession(context.directory, args.workDir)
+    const workDir = args.workDir ?? runtimeStore.get(context.sessionID)?.workDir
+    const session = await loadAutoresearchSession(context.directory, workDir)
     const run = args.runId
       ? session.state.runs.find((item) => item.id === args.runId)
       : session.state.runs.at(-1)
@@ -81,7 +82,7 @@ export const logExperimentTool = tool({
       type: "run",
     })
 
-    const nextSession = await loadAutoresearchSession(context.directory, args.workDir)
+  const nextSession = await loadAutoresearchSession(context.directory, workDir)
     await writeStateSnapshot(nextSession.paths, nextSession.state)
 
     return {

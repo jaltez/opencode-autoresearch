@@ -20,7 +20,8 @@ export const autoresearchCreateTool = tool({
   async execute(args, context) {
     context.metadata({ title: "Create autoresearch scaffold" })
 
-    const session = await loadAutoresearchSession(context.directory, args.workDir)
+    const workDir = args.workDir ?? runtimeStore.get(context.sessionID)?.workDir
+    const session = await loadAutoresearchSession(context.directory, workDir)
     const defaultName = args.name ?? session.state.config?.name ?? path.basename(session.paths.directory)
     const command = args.command ?? session.state.config?.command ?? (await inferDefaultCommand(context.directory))
 
@@ -57,7 +58,7 @@ export const autoresearchCreateTool = tool({
         name: defaultName,
         objective: args.objective ?? session.state.config?.objective,
         primaryMetric: args.primaryMetric ?? session.state.config?.primaryMetric,
-        workDir: args.workDir ?? session.state.config?.workDir,
+        workDir: workDir ?? session.state.config?.workDir,
       }
 
       await appendJsonlEntry(session.paths, {
@@ -69,7 +70,7 @@ export const autoresearchCreateTool = tool({
       initialized = true
     }
 
-    const nextSession = await loadAutoresearchSession(context.directory, args.workDir)
+    const nextSession = await loadAutoresearchSession(context.directory, workDir)
     await writeStateSnapshot(nextSession.paths, nextSession.state)
     if (initialized) {
       runtimeStore.activate(context.sessionID, nextSession.paths.directory)

@@ -15,7 +15,8 @@ export const controlTool = tool({
   async execute(args, context) {
     context.metadata({ title: `Autoresearch ${args.action}` })
 
-    const session = await loadAutoresearchSession(context.directory, args.workDir)
+    const workDir = args.workDir ?? runtimeStore.get(context.sessionID)?.workDir
+    const session = await loadAutoresearchSession(context.directory, workDir)
     switch (args.action) {
       case "status": {
         const summary = buildAutoresearchCompactionSummary({
@@ -26,7 +27,7 @@ export const controlTool = tool({
         return summary
       }
       case "export": {
-        const exported = await exportDashboard(context.directory, args.workDir)
+        const exported = await exportDashboard(context.directory, workDir)
         return `Exported autoresearch dashboard to ${exported.path}`
       }
       case "clear": {
@@ -49,7 +50,7 @@ export const controlTool = tool({
           reason: args.reason,
           type: "mode",
         })
-        const nextSession = await loadAutoresearchSession(context.directory, args.workDir)
+        const nextSession = await loadAutoresearchSession(context.directory, workDir)
         await writeStateSnapshot(nextSession.paths, nextSession.state)
         return `Autoresearch mode set to ${mode}.`
       }

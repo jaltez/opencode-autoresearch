@@ -17,7 +17,8 @@ export const initExperimentTool = tool({
   async execute(args, context) {
     context.metadata({ title: "Initialize autoresearch session" })
 
-    const session = await loadAutoresearchSession(context.directory, args.workDir)
+    const workDir = args.workDir ?? runtimeStore.get(context.sessionID)?.workDir
+    const session = await loadAutoresearchSession(context.directory, workDir)
     const config = {
       checks: args.checks,
       command: args.command,
@@ -41,7 +42,7 @@ export const initExperimentTool = tool({
       type: "session",
     })
 
-    const nextSession = await loadAutoresearchSession(context.directory, args.workDir)
+    const nextSession = await loadAutoresearchSession(context.directory, workDir)
     await writeStateSnapshot(nextSession.paths, nextSession.state)
     runtimeStore.activate(context.sessionID, nextSession.paths.directory)
 
