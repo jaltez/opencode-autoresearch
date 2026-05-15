@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises"
 import path from "node:path"
 
 export const AUTORESEARCH_SESSION_FILENAMES = {
@@ -20,6 +21,7 @@ export const AUTORESEARCH_FILENAMES = {
 } as const
 
 export const AUTORESEARCH_HOOKS_DIRECTORY = "autoresearch.hooks"
+export const AUTORESEARCH_BACKUPS_DIRECTORY = ".autoresearch.backups"
 
 export const AUTORESEARCH_HOOK_FILENAMES = {
   after: "after.sh",
@@ -30,6 +32,7 @@ export type AutoresearchFileKind = keyof typeof AUTORESEARCH_FILENAMES
 export type AutoresearchHookKind = keyof typeof AUTORESEARCH_HOOK_FILENAMES
 
 export interface ResolvedAutoresearchPaths {
+  backupsDirectory: string
   checks: string
   config: string
   dashboard: string
@@ -52,6 +55,7 @@ export function resolveAutoresearchPaths(projectDir: string, configuredWorkDir?:
   const directory = resolveWorkDir(projectDir, configuredWorkDir)
 
   return {
+    backupsDirectory: path.join(directory, AUTORESEARCH_BACKUPS_DIRECTORY),
     checks: path.join(directory, AUTORESEARCH_SESSION_FILENAMES.checks),
     config: path.join(directory, AUTORESEARCH_SESSION_FILENAMES.config),
     dashboard: path.join(directory, AUTORESEARCH_FILENAMES.dashboard),
@@ -79,6 +83,7 @@ export function autoresearchHookCandidates(paths: ResolvedAutoresearchPaths, kin
 
 export function listAutoresearchArtifactPaths(): string[] {
   return [...new Set([
+    AUTORESEARCH_BACKUPS_DIRECTORY,
     ...Object.values(AUTORESEARCH_FILENAMES),
     ...Object.values(AUTORESEARCH_HOOK_FILENAMES),
     ...Object.values(AUTORESEARCH_HOOK_FILENAMES).map((fileName) => `${AUTORESEARCH_HOOKS_DIRECTORY}/${fileName}`),
@@ -90,6 +95,27 @@ export function isAutoresearchArtifactPath(filePath: string): boolean {
   if (!normalized) return false
   if (listAutoresearchArtifactPaths().includes(normalized)) return true
   return normalized.startsWith(`${AUTORESEARCH_HOOKS_DIRECTORY}/`)
+    || normalized.startsWith(`${AUTORESEARCH_BACKUPS_DIRECTORY}/`)
+}
+
+export function listAutoresearchManagedPaths(
+  paths: ResolvedAutoresearchPaths,
+  options?: { includeBackups?: boolean },
+): string[] {
+  return [
+    paths.checks,
+    paths.config,
+    paths.dashboard,
+    paths.hooksDirectory,
+    paths.ideas,
+    paths.jsonl,
+    paths.notes,
+    resolveLegacyAutoresearchHookPath(paths, "before"),
+    resolveLegacyAutoresearchHookPath(paths, "after"),
+    paths.script,
+    paths.state,
+    ...(options?.includeBackups ? [paths.backupsDirectory] : []),
+  ]
 }
 
 export async function resolveExistingAutoresearchPaths(
@@ -129,6 +155,9 @@ async function findAutoresearchDirectory(projectDir: string): Promise<string | u
   const jsonlMatch = await findFirstMatchingFile(projectDir, AUTORESEARCH_FILENAMES.jsonl)
   if (jsonlMatch) return path.dirname(jsonlMatch)
 
+  const backupMatch = await findFirstMatchingDirectory(projectDir, AUTORESEARCH_BACKUPS_DIRECTORY)
+  if (backupMatch) return path.dirname(backupMatch)
+
   return undefined
 }
 
@@ -138,6 +167,29 @@ async function findFirstMatchingFile(projectDir: string, fileName: string): Prom
 
   for await (const match of glob.scan({ cwd: projectDir, onlyFiles: true })) {
     matches.push(path.resolve(projectDir, match))
+    if (matches.length >= 32) break
+  }
+
+  matches.sort((left, right) => {
+    const leftDepth = path.relative(projectDir, left).split(path.sep).length
+    const rightDepth = path.relative(projectDir, right).split(path.sep).length
+    if (leftDepth !== rightDepth) return leftDepth - rightDepth
+    return left.localeCompare(right)
+  })
+
+  return matches[0]
+}
+
+async function findFirstMatchingDirectory(projectDir: string, directoryName: string): Promise<string | undefined> {
+  const glob = new Bun.Glob(`**/${directoryName}`)
+  const matches: string[] = []
+
+  for await (const match of glob.scan({ cwd: projectDir })) {
+    const absoluteMatch = path.resolve(projectDir, match)
+    const entry = await stat(absoluteMatch).catch(() => undefined)
+    if (!entry?.isDirectory()) continue
+    if (!directoryName || path.basename(absoluteMatch) !== directoryName) continue
+    matches.push(absoluteMatch)
     if (matches.length >= 32) break
   }
 

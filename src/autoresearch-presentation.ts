@@ -4,6 +4,11 @@ import { currentSegment, currentSegmentRuns, findBaselineRun, findBestKeptRun } 
 import { computeRelativeChange, computeSegmentConfidence, findPrimaryMetric } from "./core/metrics"
 import type { ResolvedAutoresearchPaths } from "./core/paths"
 import type { AutoresearchState, ExperimentRun, MetricValue } from "./core/types"
+import {
+  createEmptyAutoresearchDurabilityStatus,
+  type AutoresearchDurabilityIssue,
+  type AutoresearchDurabilityStatus,
+} from "./server/durability"
 import { buildFinalizePlan, renderFinalizePlan } from "./server/finalize"
 
 export interface AutoresearchPresentationSignalRunSummary {
@@ -23,6 +28,11 @@ export interface AutoresearchPresentationModel {
   command?: string
   currentSegment: number
   currentSegmentRunCount: number
+  durabilityBackupCount: number
+  durabilityIssueCount: number
+  durabilityIssues: AutoresearchDurabilityIssue[]
+  durabilityRecoveryRequired: boolean
+  finalizeWarningCount: number
   finalizeGroups: Array<{
     branchName: string
     files: string
@@ -58,6 +68,7 @@ export interface AutoresearchPresentationModel {
 }
 
 export interface AutoresearchPresentationInput {
+  durability?: AutoresearchDurabilityStatus
   ideasText?: string
   notesText?: string
   paths: ResolvedAutoresearchPaths
@@ -66,6 +77,7 @@ export interface AutoresearchPresentationInput {
 }
 
 export function buildAutoresearchPresentationModel(input: AutoresearchPresentationInput): AutoresearchPresentationModel {
+  const durability = input.durability ?? createEmptyAutoresearchDurabilityStatus()
   const segment = currentSegment(input.state)
   const segmentRuns = currentSegmentRuns(input.state, -1)
   const baselineRun = findBaselineRun(input.state, segment)
@@ -89,6 +101,11 @@ export function buildAutoresearchPresentationModel(input: AutoresearchPresentati
     command: input.state.config?.command,
     currentSegment: segment,
     currentSegmentRunCount: segmentRuns.length,
+    durabilityBackupCount: durability.backupCount,
+    durabilityIssueCount: durability.issues.length,
+    durabilityIssues: durability.issues,
+    durabilityRecoveryRequired: durability.requiresRecovery,
+    finalizeWarningCount: finalizePlan.warnings.length,
     finalizeGroups: finalizePlan.groups.map((group) => ({
       branchName: group.branchName,
       files: group.files.join(", ") || "none recorded",
@@ -114,17 +131,17 @@ export function buildAutoresearchPresentationModel(input: AutoresearchPresentati
         }
       : undefined,
     mode: input.state.mode,
-    name: input.state.config?.name ?? "Autoresearch",
+    name: input.state.config?.name ?? (durability.requiresRecovery ? "Autoresearch Recovery" : "Autoresearch"),
     nextActionHint: extractNextActionHint(latestRun?.asi) ?? extractNextActionHint(bestRun?.asi),
     objective: input.state.config?.objective,
     pendingRuns,
-    promptLabel: buildPromptLabel(input.state.mode, segment, latestRun?.iteration, pendingRuns),
+    promptLabel: buildPromptLabel(input.state.mode, segment, latestRun?.iteration, pendingRuns, durability.requiresRecovery),
     recentHook: input.state.hooks.at(-1)?.message,
     relativeWorkDir: path.relative(input.projectDir, input.paths.directory) || ".",
     runCount: input.state.runs.length,
     segmentConfidence: formatSegmentConfidence(computeSegmentConfidence(segmentRuns, input.state.config?.primaryMetric)),
     summaryText,
-    warningCount: finalizePlan.warnings.length,
+    warningCount: finalizePlan.warnings.length + durability.issues.length,
   }
 }
 
@@ -158,8 +175,15 @@ function formatMetrics(metrics: readonly MetricValue[]): string {
   return metrics.map((metric) => formatMetric(metric)).join(", ")
 }
 
-function buildPromptLabel(mode: "active" | "off" | "paused", segment: number, latestIteration: number | undefined, pendingRuns: number): string {
+function buildPromptLabel(
+  mode: "active" | "off" | "paused",
+  segment: number,
+  latestIteration: number | undefined,
+  pendingRuns: number,
+  requiresRecovery: boolean,
+): string {
   const parts = ["AR", mode, `s${segment}`]
+  if (requiresRecovery) parts.push("repair")
   if (latestIteration !== undefined) parts.push(`#${latestIteration}`)
   if (pendingRuns > 0) parts.push(`${pendingRuns} pending`)
   return parts.join(" · ")

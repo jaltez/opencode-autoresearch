@@ -1,17 +1,24 @@
-import { appendFile, chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { buildAutoresearchPresentationModel } from "../autoresearch-presentation"
 import { reconstructJsonlState, serializeJsonlEntry } from "../core/jsonl"
 import { normalizeAutoresearchState } from "../core/session-config"
 import {
+  listAutoresearchManagedPaths,
   resolveExistingAutoresearchPaths,
-  resolveLegacyAutoresearchHookPath,
   type ResolvedAutoresearchPaths,
 } from "../core/paths"
 import { renderDashboardHtml } from "./dashboard-html"
+import {
+  getAutoresearchDurabilityStatus,
+  inspectAutoresearchJsonl,
+  parseStateSnapshot,
+  type AutoresearchDurabilityStatus,
+} from "./durability"
 import type { AutoresearchJsonlEntry, AutoresearchState } from "../core/types"
 
 export interface LoadedAutoresearchSession {
+  durability: AutoresearchDurabilityStatus
   ideasText?: string
   notesText?: string
   paths: ResolvedAutoresearchPaths
@@ -20,15 +27,27 @@ export interface LoadedAutoresearchSession {
 
 export async function loadAutoresearchSession(projectDir: string, configuredWorkDir?: string): Promise<LoadedAutoresearchSession> {
   const paths = await resolveExistingAutoresearchPaths(projectDir, configuredWorkDir)
-  const [jsonlText, notesText, ideasText] = await Promise.all([
+  const [jsonlText, notesText, ideasText, stateText] = await Promise.all([
     readOptionalText(paths.jsonl),
     readOptionalText(paths.notes),
     readOptionalText(paths.ideas),
+    readOptionalText(paths.state),
   ])
 
-  const state = await normalizeAutoresearchState(paths, reconstructJsonlState(jsonlText ?? ""))
+  const snapshotState = parseStateSnapshot(stateText)
+  const jsonlInspection = jsonlText ? inspectAutoresearchJsonl(jsonlText) : undefined
+  const durability = await getAutoresearchDurabilityStatus({
+    jsonlText,
+    paths,
+    stateText,
+  })
+  const baseState = jsonlText && jsonlInspection?.invalidLineNumbers.length === 0
+    ? jsonlInspection.state
+    : snapshotState ?? reconstructJsonlState(jsonlText ?? "")
+  const state = await normalizeAutoresearchState(paths, baseState)
 
   return {
+    durability,
     ideasText,
     notesText,
     paths,
@@ -38,7 +57,21 @@ export async function loadAutoresearchSession(projectDir: string, configuredWork
 
 export async function appendJsonlEntry(paths: ResolvedAutoresearchPaths, entry: AutoresearchJsonlEntry): Promise<void> {
   await ensureAutoresearchDirectory(paths)
-  await appendFile(paths.jsonl, serializeJsonlEntry(entry), "utf8")
+  const existing = await readOptionalText(paths.jsonl)
+  if (existing) {
+    const inspection = inspectAutoresearchJsonl(existing)
+    if (inspection.invalidLineNumbers.length > 0) {
+      throw new Error(`Refusing to append to autoresearch.jsonl because line(s) ${inspection.invalidLineNumbers.join(", ")} are invalid. Restore or repair the file before continuing.`)
+    }
+  }
+
+  const nextContent = `${existing ?? ""}${serializeJsonlEntry(entry)}`
+  const nextInspection = inspectAutoresearchJsonl(nextContent)
+  if (nextInspection.invalidLineNumbers.length > 0) {
+    throw new Error(`Refusing to write invalid autoresearch.jsonl content. Validation failed on line(s) ${nextInspection.invalidLineNumbers.join(", ")}.`)
+  }
+
+  await writeAtomic(paths.jsonl, nextContent, { verifyContent: nextContent })
 }
 
 export async function ensureAutoresearchDirectory(paths: ResolvedAutoresearchPaths): Promise<void> {
@@ -83,20 +116,13 @@ export async function ensureAutoresearchFiles(
   }
 }
 
-export async function removeAutoresearchFiles(paths: ResolvedAutoresearchPaths): Promise<void> {
-  await Promise.all([
-    rm(paths.checks, { force: true }).catch(() => undefined),
-    rm(paths.config, { force: true }).catch(() => undefined),
-    rm(paths.dashboard, { force: true }).catch(() => undefined),
-    rm(paths.hooksDirectory, { force: true, recursive: true }).catch(() => undefined),
-    rm(paths.ideas, { force: true }).catch(() => undefined),
-    rm(paths.jsonl, { force: true }).catch(() => undefined),
-    rm(paths.notes, { force: true }).catch(() => undefined),
-    rm(resolveLegacyAutoresearchHookPath(paths, "before"), { force: true }).catch(() => undefined),
-    rm(resolveLegacyAutoresearchHookPath(paths, "after"), { force: true }).catch(() => undefined),
-    rm(paths.script, { force: true }).catch(() => undefined),
-    rm(paths.state, { force: true }).catch(() => undefined),
-  ])
+export async function removeAutoresearchFiles(
+  paths: ResolvedAutoresearchPaths,
+  options?: { includeBackups?: boolean },
+): Promise<void> {
+  await Promise.all(listAutoresearchManagedPaths(paths, { includeBackups: options?.includeBackups }).map(async (managedPath) => {
+    await rm(managedPath, { force: true, recursive: true }).catch(() => undefined)
+  }))
 }
 
 export async function writeDashboard(
@@ -105,8 +131,10 @@ export async function writeDashboard(
   notesText?: string,
   ideasText?: string,
   projectDir = paths.directory,
+  durability?: AutoresearchDurabilityStatus,
 ): Promise<string> {
   const model = buildAutoresearchPresentationModel({
+    durability,
     ideasText,
     notesText,
     paths,
@@ -115,13 +143,14 @@ export async function writeDashboard(
   })
   const html = renderDashboardHtml(model)
   await ensureAutoresearchDirectory(paths)
-  await writeAtomic(paths.dashboard, html)
+  await writeAtomic(paths.dashboard, html, { verifyContent: html })
   return paths.dashboard
 }
 
 export async function writeStateSnapshot(paths: ResolvedAutoresearchPaths, state: AutoresearchState): Promise<void> {
   await ensureAutoresearchDirectory(paths)
-  await writeAtomic(paths.state, `${JSON.stringify(state, null, 2)}\n`)
+  const content = `${JSON.stringify(state, null, 2)}\n`
+  await writeAtomic(paths.state, content, { verifyContent: content })
 }
 
 async function readOptionalText(filePath: string): Promise<string | undefined> {
@@ -132,13 +161,19 @@ async function readOptionalText(filePath: string): Promise<string | undefined> {
   }
 }
 
-async function writeAtomic(filePath: string, content: string): Promise<void> {
+async function writeAtomic(filePath: string, content: string, options?: { verifyContent?: string }): Promise<void> {
   const tempPath = path.join(path.dirname(filePath), `.tmp-${path.basename(filePath)}-${process.pid}-${Date.now()}`)
   await writeFile(tempPath, content, "utf8")
   await rename(tempPath, filePath)
+  if (options?.verifyContent !== undefined) {
+    const persisted = await readFile(filePath, "utf8")
+    if (persisted !== options.verifyContent) {
+      throw new Error(`Verification failed after writing ${path.basename(filePath)}.`)
+    }
+  }
 }
 
 async function writeExecutableAtomic(filePath: string, content: string): Promise<void> {
-  await writeAtomic(filePath, content)
+  await writeAtomic(filePath, content, { verifyContent: content })
   await chmod(filePath, 0o755)
 }

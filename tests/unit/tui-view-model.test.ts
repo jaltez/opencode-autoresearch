@@ -116,4 +116,38 @@ describe("tui view model", () => {
     expect(model.recentHook).toBe("after hook ok")
     expect(model.summaryText).toContain("## Recent Runs")
   })
+
+  it("surfaces durability recovery signals in the view model", () => {
+    const snapshot: AutoresearchWorkspaceSnapshot = {
+      durability: {
+        backupCount: 2,
+        degraded: true,
+        issues: [
+          {
+            code: "missing_jsonl",
+            message: "autoresearch.jsonl is missing, so the source-of-truth session history cannot be trusted.",
+            recovery: "Use autoresearch action=restore before resuming the loop.",
+            severity: "error",
+          },
+        ],
+        requiresRecovery: true,
+      },
+      paths: resolveAutoresearchPaths("/tmp/project"),
+      projectDir: "/tmp/project",
+      state: {
+        hooks: [],
+        mode: "paused",
+        notes: [],
+        runs: [],
+        secondaryMetrics: {},
+      },
+    }
+
+    const model = buildAutoresearchTuiViewModel(snapshot)
+
+    expect(model.durabilityRecoveryRequired).toBe(true)
+    expect(model.durabilityBackupCount).toBe(2)
+    expect(model.durabilityIssueCount).toBe(1)
+    expect(model.promptLabel).toContain("repair")
+  })
 })

@@ -51,11 +51,12 @@ export function createAutoresearchCommands(): Record<string, MutableCommandConfi
   return {
     autoresearch: {
       agent: AUTORESEARCH_AGENT,
-      description: "Start, resume, pause, or inspect an autoresearch session.",
+      description: "Start, resume, pause, inspect, back up, or restore an autoresearch session.",
       template: [
         "Manage the current autoresearch session.",
-        "Interpret $ARGUMENTS as the requested action, such as start, resume, pause, off, clear, export, or status.",
+        "Interpret $ARGUMENTS as the requested action, such as start, resume, pause, off, clear, export, status, backup, backups, or restore.",
         "Keep file conventions compatible with autoresearch.jsonl, autoresearch.md, autoresearch.ideas.md, autoresearch.sh, and autoresearch.config.json.",
+        "If the session is degraded, prioritize backup, backups, restore, or reinitialization before more loop mutations.",
         "If deterministic autoresearch tools are available, prefer autoresearch_control over ad hoc bash commands.",
       ].join("\n"),
     },

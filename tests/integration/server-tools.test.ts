@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import { writeFile } from "node:fs/promises"
+import { rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { loadAutoresearchSession } from "../../src/server/storage"
 import { runtimeStore } from "../../src/server/runtime"
@@ -250,6 +250,75 @@ describe("server tools integration", () => {
     })
     expect(session.state.runs[2]?.confidence).toBeGreaterThan(1.5)
     expect(session.state.runs[2]?.segment).toBe(1)
+  })
+
+  it("creates restorable backups and preserves them across clear deleteFiles", async () => {
+    const workspace = await createFixtureWorkspace("stable-benchmark")
+    const context = createToolContext(workspace)
+
+    await initExperimentTool.execute(
+      {
+        checks: ["./check.sh"],
+        command: "./benchmark.sh",
+        name: "stable-benchmark",
+        objective: "Keep session artifacts recoverable after destructive clears.",
+        primaryMetric: "accuracy",
+      },
+      context,
+    )
+
+    const backupResult = await controlTool.execute({ action: "backup" }, context)
+    expect(backupResult).toContain("Created backup")
+
+    const listResult = await controlTool.execute({ action: "backups" }, context)
+    expect(listResult).toContain("manual")
+
+    const clearResult = await controlTool.execute({ action: "clear", deleteFiles: true }, context)
+    expect(clearResult).toContain("preserved backup")
+    expect(await Bun.file(path.join(workspace, "autoresearch.jsonl")).exists()).toBe(false)
+    expect((await stat(path.join(workspace, ".autoresearch.backups"))).isDirectory()).toBe(true)
+
+    const restoreResult = await controlTool.execute({ action: "restore" }, context)
+    expect(restoreResult).toContain("Restored autoresearch backup")
+    expect(await Bun.file(path.join(workspace, "autoresearch.jsonl")).exists()).toBe(true)
+
+    const restoredSession = await loadAutoresearchSession(workspace)
+    expect(restoredSession.state.config?.name).toBe("stable-benchmark")
+    expect(restoredSession.durability.requiresRecovery).toBe(false)
+  })
+
+  it("blocks loop mutations and exports recovery warnings when autoresearch.jsonl is missing", async () => {
+    const workspace = await createFixtureWorkspace("stable-benchmark")
+    const context = createToolContext(workspace)
+    const runExperimentTool = createRunExperimentTool()
+
+    await initExperimentTool.execute(
+      {
+        checks: ["./check.sh"],
+        command: "./benchmark.sh",
+        name: "stable-benchmark",
+        objective: "Make degraded-state recovery explicit before running more experiments.",
+        primaryMetric: "accuracy",
+      },
+      context,
+    )
+
+    await controlTool.execute({ action: "backup" }, context)
+    await rm(path.join(workspace, "autoresearch.jsonl"), { force: true })
+
+    const statusResult = await controlTool.execute({ action: "status" }, context)
+    expect(statusResult).toContain("Durability: recovery required.")
+    expect(statusResult).toContain("autoresearch.jsonl is missing")
+
+    const runResult = await runExperimentTool.execute({}, context)
+    expect(runResult).toContain("Autoresearch session recovery is required before running a new experiment.")
+
+    const exportResult = await controlTool.execute({ action: "export" }, context)
+    expect(exportResult).toContain("autoresearch.dashboard.html")
+
+    const html = await readText(path.join(workspace, "autoresearch.dashboard.html"))
+    expect(html).toContain("Recovery Required")
+    expect(html).toContain("autoresearch.jsonl is missing")
   })
 
   it("exports an HTML dashboard with signal cards and finalize preview", async () => {

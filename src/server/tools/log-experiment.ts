@@ -3,6 +3,7 @@ import { Effect } from "effect"
 import { currentSegmentRuns } from "../../core/jsonl"
 import { computeSegmentConfidence } from "../../core/metrics"
 import type { ExperimentRun } from "../../core/types"
+import { formatAutoresearchRecoveryMessage } from "../durability"
 import { discardRunChanges, keepRunChanges, preservedArtifactPaths } from "../git"
 import { appendJsonlEntry, loadAutoresearchSession, writeStateSnapshot } from "../storage"
 import { runtimeStore } from "../runtime"
@@ -21,6 +22,11 @@ export const logExperimentTool = tool({
 
     const workDir = args.workDir ?? runtimeStore.get(context.sessionID)?.workDir
     const session = await loadAutoresearchSession(context.directory, workDir)
+    const recoveryMessage = formatAutoresearchRecoveryMessage(session.durability, "logging a run decision")
+    if (recoveryMessage) {
+      return recoveryMessage
+    }
+
     const run = args.runId
       ? session.state.runs.find((item) => item.id === args.runId)
       : session.state.runs.at(-1)

@@ -28,6 +28,12 @@ const plugin: TuiPluginModule & { id: string } = {
           title: "Autoresearch: Status",
         }, api),
         createPaletteItem({
+          action: "backup",
+          description: "Create a durable backup of the current autoresearch session artifacts.",
+          sessionID,
+          title: "Autoresearch: Backup Session",
+        }, api),
+        createPaletteItem({
           description: "Open the opencode-native autoresearch dashboard for the current workspace.",
           enabled: Boolean(api.state.path.directory),
           onSelect: () => {
@@ -53,6 +59,12 @@ const plugin: TuiPluginModule & { id: string } = {
           description: "Resume automatic autoresearch continuation for the active session.",
           sessionID,
           title: "Autoresearch: Resume",
+        }, api),
+        createPaletteItem({
+          action: "restore",
+          description: "Restore the latest autoresearch backup for the active session.",
+          sessionID,
+          title: "Autoresearch: Restore Latest Backup",
         }, api),
         createPaletteItem({
           commandName: "autoresearch-finalize",
@@ -88,7 +100,7 @@ export default plugin
 
 function createPaletteItem(
   input: {
-    action?: "export" | "pause" | "resume" | "status"
+    action?: "backup" | "export" | "pause" | "restore" | "resume" | "status"
     commandName?: "autoresearch-finalize"
     description: string
     enabled?: boolean
@@ -157,7 +169,7 @@ function AutoresearchPromptStatus(props: { projectDir: string; sessionID: string
   const model = useAutoresearchModel(() => props.projectDir)
   return (
     <box paddingLeft={1}>
-      <text fg={modeColor(model()?.mode)}>
+      <text fg={model()?.durabilityRecoveryRequired ? "#e28b6d" : modeColor(model()?.mode)}>
         {model()?.promptLabel ?? `AR · ${path.basename(props.projectDir)}`}
       </text>
     </box>
@@ -186,6 +198,10 @@ function AutoresearchSidebar(props: { projectDir: string }) {
               <text fg="#aab5c4" wrapMode="word">Benchmark: {model()?.benchmarkCommand}</text>
             </Show>
           </box>
+
+          <Show when={model()}>
+            {(resolved: () => AutoresearchTuiViewModel) => <AutoresearchDurabilityCard model={resolved()} />}
+          </Show>
 
           <Show when={model()}>
             {(resolved: () => AutoresearchTuiViewModel) => <AutoresearchSignalCard model={resolved()} />}
@@ -270,6 +286,10 @@ function AutoresearchDashboard(props: { projectDir: string }) {
           </box>
 
           <Show when={model()}>
+            {(resolved: () => AutoresearchTuiViewModel) => <AutoresearchDurabilityCard model={resolved()} />}
+          </Show>
+
+          <Show when={model()}>
             {(resolved: () => AutoresearchTuiViewModel) => <AutoresearchSignalCard model={resolved()} />}
           </Show>
 
@@ -314,6 +334,33 @@ function AutoresearchSignalCard(props: { model: AutoresearchTuiViewModel }) {
         <text fg="#d5c8a2" wrapMode="word">Next: {props.model.nextActionHint}</text>
       </Show>
     </box>
+  )
+}
+
+function AutoresearchDurabilityCard(props: { model: AutoresearchTuiViewModel }) {
+  return (
+    <Show when={props.model.durabilityIssueCount > 0 || props.model.durabilityBackupCount > 0}>
+      <box border borderColor={props.model.durabilityRecoveryRequired ? "#c45c43" : "#3d3d3d"} flexDirection="column" gap={1} padding={1} title="Durability">
+        <text fg={props.model.durabilityRecoveryRequired ? "#f1a287" : "#8dcf9f"}>
+          {props.model.durabilityRecoveryRequired
+            ? "Recovery required before loop mutations."
+            : props.model.durabilityIssueCount > 0
+              ? "Durability warnings detected."
+              : "Backups are available for recovery."}
+        </text>
+        <text fg="#aab5c4">Backups: {props.model.durabilityBackupCount}</text>
+        <For each={props.model.durabilityIssues}>
+          {(issue) => (
+            <box flexDirection="column" gap={0}>
+              <text fg={issue.severity === "error" ? "#f1a287" : "#d8b15a"} wrapMode="word">{issue.message}</text>
+              <Show when={issue.recovery}>
+                <text fg="#d5c8a2" wrapMode="word">{issue.recovery}</text>
+              </Show>
+            </box>
+          )}
+        </For>
+      </box>
+    </Show>
   )
 }
 

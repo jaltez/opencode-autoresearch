@@ -24,6 +24,8 @@ export function renderDashboardHtml(model: AutoresearchPresentationModel): strin
     "      --accent-soft: #f1d7bf;",
     "      --signal: #2b6a63;",
     "      --signal-soft: #d7ebe8;",
+    "      --danger: #a33f2f;",
+    "      --danger-soft: #f4d8cf;",
     "      --shadow: 0 22px 56px rgba(54, 34, 16, 0.10);",
     "    }",
     "    * { box-sizing: border-box; }",
@@ -52,6 +54,7 @@ export function renderDashboardHtml(model: AutoresearchPresentationModel): strin
     "    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }",
     "    .card { background: rgba(255, 250, 242, 0.90); border: 1px solid var(--border); border-radius: 24px; box-shadow: var(--shadow); padding: 22px; }",
     "    .card-wide { grid-column: 1 / -1; }",
+    "    .alert { border-color: rgba(163, 63, 47, 0.28); background: linear-gradient(180deg, rgba(244, 216, 207, 0.75), rgba(255, 250, 242, 0.92)); }",
     "    h2 { font-size: 19px; margin: 0 0 14px; }",
     "    .facts { display: grid; gap: 10px; }",
     "    .fact { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; border-bottom: 1px solid rgba(212, 197, 176, 0.55); padding-bottom: 8px; }",
@@ -62,6 +65,7 @@ export function renderDashboardHtml(model: AutoresearchPresentationModel): strin
     "    .run strong { display: block; font-size: 15px; margin-bottom: 4px; }",
     "    .run p, .note, .muted { margin: 6px 0 0; color: var(--muted); line-height: 1.5; }",
     "    .signal { color: var(--signal); font-weight: 700; }",
+    "    .danger { color: var(--danger); font-weight: 700; }",
     "    .list { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }",
     "    .list li { border: 1px solid rgba(212, 197, 176, 0.55); border-radius: 16px; padding: 12px; background: rgba(255, 255, 255, 0.32); }",
     "    .list strong { display: block; margin-bottom: 4px; }",
@@ -90,9 +94,12 @@ export function renderDashboardHtml(model: AutoresearchPresentationModel): strin
     `        ${renderChip(`${model.runCount} runs`)}`,
     `        ${renderChip(`${model.keptRuns} kept`)}`,
     `        ${renderChip(`${model.pendingRuns} pending`)}`,
+    model.durabilityRecoveryRequired ? `        ${renderChip("Recovery required")}` : "",
+    model.durabilityBackupCount > 0 ? `        ${renderChip(`${model.durabilityBackupCount} backups`)}` : "",
     '      </div>',
     "    </section>",
     '    <section class="grid">',
+    `      ${renderDurabilityCard(model)}`,
     `      ${renderSessionCard(model)}`,
     `      ${renderSignalCard(model)}`,
     `      ${renderLatestRunCard(model)}`,
@@ -116,6 +123,34 @@ function renderSessionCard(model: AutoresearchPresentationModel): string {
     `    ${renderFact("Warnings", String(model.warningCount))}`,
     `    ${renderFact("Recent hook", model.recentHook ?? "none recorded")}`,
     "  </div>",
+    "</section>",
+  ].join("\n")
+}
+
+function renderDurabilityCard(model: AutoresearchPresentationModel): string {
+  if (model.durabilityIssueCount === 0 && model.durabilityBackupCount === 0) {
+    return ""
+  }
+
+  const issues = model.durabilityIssueCount > 0
+    ? [
+        '  <ul class="list">',
+        ...model.durabilityIssues.map((issue) => [
+          "    <li>",
+          `      <strong class="${issue.severity === "error" ? "danger" : "signal"}">${escapeHtml(issue.severity === "error" ? "Recovery Required" : "Durability Warning")}</strong>`,
+          `      <p class="note">${escapeHtml(issue.message)}</p>`,
+          issue.recovery ? `      <p class="note">${escapeHtml(issue.recovery)}</p>` : "",
+          "    </li>",
+        ].filter(Boolean).join("\n")),
+        "  </ul>",
+      ].join("\n")
+    : '  <p class="muted">No active durability warnings. Backups are available if you need to restore a prior session state.</p>'
+
+  return [
+    '<section class="card card-wide alert">',
+    `  <h2>${escapeHtml(model.durabilityRecoveryRequired ? "Recovery Required" : "Durability")}</h2>`,
+    `  <p class="note">Backups available: ${model.durabilityBackupCount}</p>`,
+    issues,
     "</section>",
   ].join("\n")
 }
@@ -188,7 +223,7 @@ function renderFinalizeCard(model: AutoresearchPresentationModel): string {
     "  <h2>Finalize Preview</h2>",
     '  <div class="facts">',
     `    ${renderFact("Groups", String(model.finalizeGroups.length))}`,
-    `    ${renderFact("Warnings", String(model.warningCount))}`,
+    `    ${renderFact("Warnings", String(model.finalizeWarningCount))}`,
     "  </div>",
     groups,
     "  <details>",

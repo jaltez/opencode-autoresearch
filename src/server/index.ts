@@ -2,6 +2,7 @@ import type { PluginModule } from "@opencode-ai/plugin"
 import { buildAutoresearchCompactionSummary } from "../core/compaction"
 import { AUTORESEARCH_CANONICAL_COMMAND } from "../core/session-config"
 import { injectAutoresearchConfig, type MutablePluginConfig } from "./commands"
+import { formatAutoresearchDurabilityReport } from "./durability"
 import { loadAutoresearchSession } from "./storage"
 import { runtimeStore } from "./runtime"
 import { createAutoresearchTools } from "./tools"
@@ -22,6 +23,10 @@ const plugin: PluginModule = {
           if (!runtimeStore.shouldResume(sessionId)) return
           const runtime = runtimeStore.get(sessionId)
           const session = await loadAutoresearchSession(input.directory, runtime?.workDir)
+          if (session.durability.requiresRecovery) {
+            runtimeStore.resetLoop(sessionId)
+            return
+          }
           const lastRun = session.state.runs.at(-1)
           const maxIterations = session.state.config?.maxIterations
           const atLimit = Boolean(maxIterations && lastRun && lastRun.iteration >= maxIterations)
@@ -61,6 +66,10 @@ const plugin: PluginModule = {
         if (!sessionID) return
         const runtime = runtimeStore.get(sessionID)
         const session = await loadAutoresearchSession(input.directory, runtime?.workDir)
+        const durabilityReport = formatAutoresearchDurabilityReport(session.durability)
+        if (durabilityReport) {
+          output.system.push(durabilityReport)
+        }
         if (!session.state.config) return
 
         const benchmarkCommand = session.state.config.benchmarkCommand

@@ -1,6 +1,7 @@
 import { tool } from "@opencode-ai/plugin"
 import { Effect } from "effect"
 import { isAutoresearchArtifactPath } from "../../core/paths"
+import { formatAutoresearchRecoveryMessage } from "../durability"
 import { buildFinalizePlan, renderFinalizePlan } from "../finalize"
 import { loadAutoresearchSession } from "../storage"
 import { isGitRepository } from "../git"
@@ -18,6 +19,11 @@ export const autoresearchFinalizeTool = tool({
 
     const workDir = args.workDir ?? runtimeStore.get(context.sessionID)?.workDir
     const session = await loadAutoresearchSession(context.directory, workDir)
+    const recoveryMessage = formatAutoresearchRecoveryMessage(session.durability, "finalizing kept runs")
+    if (recoveryMessage) {
+      return recoveryMessage
+    }
+
     const plan = buildFinalizePlan(session.state.runs, args.prefix)
     if (plan.groups.length === 0) {
       return renderFinalizePlan(plan)

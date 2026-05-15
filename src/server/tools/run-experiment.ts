@@ -8,6 +8,7 @@ import { autoresearchHookCandidates, resolveAutoresearchPaths } from "../../core
 import { AUTORESEARCH_CANONICAL_COMMAND, isAutoresearchScriptCommand } from "../../core/session-config"
 import { createHookInvocation, DEFAULT_HOOK_TIMEOUT_MS } from "../../core/hooks"
 import type { ExperimentCheckResult, ExperimentRun, HookInvocation, MetricValue, RunStatus } from "../../core/types"
+import { formatAutoresearchRecoveryMessage } from "../durability"
 import { preservedArtifactPaths, captureGitChanges } from "../git"
 import { appendJsonlEntry, loadAutoresearchSession, writeStateSnapshot } from "../storage"
 import { runtimeStore } from "../runtime"
@@ -25,6 +26,11 @@ export function createRunExperimentTool() {
 
       const workDir = args.workDir ?? runtimeStore.get(context.sessionID)?.workDir
       const session = await loadAutoresearchSession(context.directory, workDir)
+      const recoveryMessage = formatAutoresearchRecoveryMessage(session.durability, "running a new experiment")
+      if (recoveryMessage) {
+        return recoveryMessage
+      }
+
       const config = session.state.config
       if (!config) {
         return "No autoresearch session is configured yet. Run init_experiment first."
