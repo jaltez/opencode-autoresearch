@@ -5,6 +5,7 @@ import { computeSegmentConfidence } from "../../core/metrics"
 import type { ExperimentRun } from "../../core/types"
 import { formatAutoresearchRecoveryMessage } from "../durability"
 import { discardRunChanges, keepRunChanges, preservedArtifactPaths } from "../git"
+import { executeAutoresearchHook } from "../hook-runner"
 import { appendJsonlEntry, loadAutoresearchSession, writeStateSnapshot } from "../storage"
 import { runtimeStore } from "../runtime"
 
@@ -71,9 +72,15 @@ export const logExperimentTool = tool({
         permission: "bash",
       }))
       const kept = await keepRunChanges(session.paths.directory, updatedRun, preservedArtifactPaths(session.paths.directory))
+      if (kept.status === "failed") {
+        return [
+          `Unable to keep run #${updatedRun.iteration} because git commit failed.`,
+          kept.output,
+          "The run remains pending; fix the git issue and retry log_experiment with decision=keep.",
+        ].join("\n")
+      }
       updatedRun.commit = kept.commit
       gitOutput = kept.output
-      runtimeStore.resetLoop(context.sessionID)
     }
 
     if (args.decision === "discard") {
@@ -84,15 +91,6 @@ export const logExperimentTool = tool({
         permission: "bash",
       }))
       gitOutput = await discardRunChanges(session.paths.directory, updatedRun, preservedArtifactPaths(session.paths.directory))
-      runtimeStore.queueAutoResume(context.sessionID, `retry:${updatedRun.id}`)
-    }
-
-    if (args.decision === "retry") {
-      runtimeStore.queueAutoResume(context.sessionID, `retry:${updatedRun.id}`)
-    }
-
-    if (args.decision === "pending") {
-      runtimeStore.queueAutoResume(context.sessionID, `pending:${updatedRun.id}`)
     }
 
     await appendJsonlEntry(session.paths, {
@@ -101,8 +99,24 @@ export const logExperimentTool = tool({
       type: "run",
     })
 
-  const nextSession = await loadAutoresearchSession(context.directory, workDir)
-    await writeStateSnapshot(nextSession.paths, nextSession.state)
+    const nextSession = await loadAutoresearchSession(context.directory, workDir)
+    const afterHook = await executeAutoresearchHook({
+      abort: context.abort,
+      directory: nextSession.paths.directory,
+      kind: "after",
+      projectDir: context.directory,
+      run: updatedRun,
+      sessionId: context.sessionID,
+      state: nextSession.state,
+      stateSummary: args.summary ?? updatedRun.summary,
+    })
+    if (afterHook) {
+      await appendJsonlEntry(nextSession.paths, { at: afterHook.at, hook: afterHook, type: "hook" })
+    }
+
+    const finalSession = afterHook ? await loadAutoresearchSession(context.directory, workDir) : nextSession
+    await writeStateSnapshot(finalSession.paths, finalSession.state)
+    queueNextLoopStep(context.sessionID, finalSession.state, updatedRun)
 
     return {
       metadata: {
@@ -121,6 +135,31 @@ export const logExperimentTool = tool({
     }
   },
 })
+
+function queueNextLoopStep(
+  sessionId: string,
+  state: Awaited<ReturnType<typeof loadAutoresearchSession>>["state"],
+  run: ExperimentRun,
+): void {
+  if (state.mode !== "active") {
+    runtimeStore.resetLoop(sessionId)
+    return
+  }
+
+  const maxIterations = state.config?.maxIterations
+  if (maxIterations && run.iteration >= maxIterations) {
+    runtimeStore.resetLoop(sessionId)
+    return
+  }
+
+  runtimeStore.queueAutoResume(sessionId, autoResumeReason(run))
+}
+
+function autoResumeReason(run: ExperimentRun): string {
+  if (run.decision === "keep") return `next:${run.id}`
+  if (run.decision === "discard" || run.decision === "retry") return `retry:${run.id}`
+  return `pending:${run.id}`
+}
 
 function formatConfidenceOutput(confidence: number | null | undefined): string | undefined {
   if (confidence == null) return undefined

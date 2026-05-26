@@ -46,6 +46,7 @@ const plugin: PluginModule = {
                     "Review the latest run in autoresearch.jsonl, decide whether to keep, discard, or retry it, and only then start the next iteration if it is justified.",
                     "Use autoresearch.ideas.md for deferred candidates and prefer the canonical autoresearch.sh entrypoint when it exists.",
                     "Log durable ASI for any run that changes your understanding of the search space.",
+                    "Be careful not to overfit to the benchmarks and do not cheat on the benchmarks.",
                   ].join(" "),
                 },
               ],
@@ -88,6 +89,7 @@ const plugin: PluginModule = {
             "Persist ASI with log_experiment so discarded or retried runs leave behind reusable diagnostic memory.",
             "Finish the current run_experiment plus log_experiment cycle before pivoting to unrelated user input.",
             "Before keeping a run, ensure the winning change is applied to the intended implementation, rerun validation at the default target configuration, then log the decision.",
+            "Be careful not to overfit to the benchmarks and do not cheat on the benchmarks.",
             "Prefer the autoresearch tools for initialization, running benchmarks, logging keep or discard decisions, and session control.",
           ].filter(Boolean).join(" "),
         )
@@ -100,6 +102,7 @@ const plugin: PluginModule = {
         output.prompt = [
           "Summarize the autoresearch session deterministically.",
           "Preserve the current objective, latest run results, kept versus discarded decisions, checks state, and the next concrete experiment step.",
+          "Be careful not to overfit to the benchmarks and do not cheat on the benchmarks.",
           "Use the following exact state as the source of truth:",
           "",
           buildAutoresearchCompactionSummary({

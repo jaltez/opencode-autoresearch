@@ -10,20 +10,23 @@ export interface CompactionSummaryInput {
 }
 
 export function buildAutoresearchCompactionSummary(input: CompactionSummaryInput): string {
-  const { ideasText, maxRuns = 5, notesText, state } = input
+  const { ideasText, maxRuns = 50, notesText, state } = input
   const sections = [
-    "# Autoresearch",
+    "# Autoresearch Compaction Summary",
+    "The persisted autoresearch state below is the source of truth after context loss.",
     sessionSection(state),
+    rulesSection(notesText),
+    ideasSection(ideasText),
     recentRunsSection(state, maxRuns),
-    notesSection(notesText, ideasText, state),
+    notesSection(state),
     nextStepSection(state),
   ].filter(Boolean)
 
   return sections.join("\n\n")
 }
 
-export function recentRunsSection(state: AutoresearchState, maxRuns = 5): string {
-  const runs = currentSegmentRuns(state, maxRuns)
+export function recentRunsSection(state: AutoresearchState, maxRuns = 50): string {
+  const runs = maxRuns < 0 ? state.runs : state.runs.slice(-maxRuns)
   if (runs.length === 0) return "## Recent Runs\n- No experiment runs have been recorded yet."
 
   const baselineRun = findBaselineRun(state)
@@ -34,7 +37,7 @@ export function recentRunsSection(state: AutoresearchState, maxRuns = 5): string
   const confidenceSummary = formatConfidenceSummary(confidence)
 
   return [
-    "## Recent Runs",
+    `## Recent Runs (last ${runs.length})`,
     `- Current segment: ${currentSegment(state)}`,
     baselineMetric
       ? `- Baseline: #${baselineRun?.iteration} ${baselineMetric.name}=${baselineMetric.value}${baselineMetric.unit ?? ""}`
@@ -77,20 +80,35 @@ export function nextStepSection(state: AutoresearchState): string {
 
 function formatRunSummary(run: ExperimentRun, state: AutoresearchState): string {
   const metrics = run.metrics.map((metric) => `${metric.name}=${metric.value}${metric.unit ?? ""}`).join(", ")
-  const summary = run.summary ? ` - ${run.summary}` : ""
-  const decision = run.decision ? `, decision=${run.decision}` : ""
+  const primaryMetric = findPrimaryMetric(run.metrics, state.config?.primaryMetric)
+  const runSegment = run.segment ?? currentSegment(state)
+  const baselineRun = findBaselineRun(state, runSegment)
+  const baselineMetric = baselineRun ? findPrimaryMetric(baselineRun.metrics, state.config?.primaryMetric) : undefined
+  const delta = formatRunDelta(primaryMetric, baselineMetric, baselineRun?.iteration)
+  const status = run.decision ?? run.status
+  const summary = run.summary ? ` | desc: ${collapseWhitespace(run.summary)}` : ""
   const confidence = run.confidence == null ? "" : `, conf=${run.confidence.toFixed(1)}x`
   const asi = formatAsiSummary(run.asi)
-  const segment = run.segment && run.segment !== currentSegment(state) ? `, segment=${run.segment}` : ""
-  return `- #${run.iteration}: status=${run.status}${decision}${segment}${confidence}; metrics=[${metrics || "none"}]${summary}${asi}`
+  const segment = runSegment !== currentSegment(state) ? `, segment=${runSegment}` : ""
+  return `- #${run.iteration} ${status}${segment}${confidence}; metrics=[${metrics || "none"}]${delta}${summary}${asi}`
 }
 
-function notesSection(notesText: string | undefined, ideasText: string | undefined, state: AutoresearchState): string {
-  const notes = [notesText, ideasText, state.notes.at(-1)]
+function rulesSection(notesText: string | undefined): string | undefined {
+  if (!notesText?.trim()) return undefined
+  return `## Experiment Rules (autoresearch.md)\n${notesText.trim()}`
+}
+
+function ideasSection(ideasText: string | undefined): string | undefined {
+  if (!ideasText?.trim()) return undefined
+  return `## Ideas Backlog (autoresearch.ideas.md)\n${ideasText.trim()}`
+}
+
+function notesSection(state: AutoresearchState): string | undefined {
+  const notes = state.notes
     .filter((value): value is string => Boolean(value && value.trim()))
     .map((value) => value.trim())
 
-  if (notes.length === 0) return "## Notes\n- No notes or ideas captured yet."
+  if (notes.length === 0) return undefined
 
   return ["## Notes", ...notes.map((value) => `- ${collapseWhitespace(value).slice(0, 240)}`)].join("\n")
 }
@@ -115,7 +133,7 @@ function sessionSection(state: AutoresearchState): string {
 }
 
 function collapseWhitespace(value: string): string {
-  return value.replace(/\s+/gu, " ")
+  return value.replace(/\s+/gu, " ").trim()
 }
 
 function formatBestRunSummary(
@@ -145,11 +163,41 @@ function formatConfidenceSummary(confidence: number | null): string {
 function formatAsiSummary(asi: Record<string, unknown> | undefined): string {
   if (!asi || Object.keys(asi).length === 0) return ""
 
-  const parts = Object.entries(asi)
-    .slice(0, 3)
-    .map(([key, value]) => `${key}=${collapseWhitespace(formatAsiValue(value)).slice(0, 48)}`)
+  const preferred = [
+    ["hypothesis", "hyp"],
+    ["next_action_hint", "next"],
+    ["rollback_reason", "rollback"],
+  ] as const
+  const parts = preferred
+    .map(([key, label]) => {
+      const value = asi[key]
+      if (typeof value !== "string" || !value.trim()) return undefined
+      return `${label}: ${collapseWhitespace(value).slice(0, 80)}`
+    })
+    .filter((value): value is string => Boolean(value))
 
-  return parts.length > 0 ? `; asi=[${parts.join(" | ")}]` : ""
+  if (parts.length === 0) {
+    parts.push(...Object.entries(asi)
+      .slice(0, 3)
+      .map(([key, value]) => `${key}=${collapseWhitespace(formatAsiValue(value)).slice(0, 48)}`))
+  }
+
+  return parts.length > 0 ? ` | ${parts.join(" | ")}` : ""
+}
+
+function formatRunDelta(
+  metric: ReturnType<typeof findPrimaryMetric>,
+  baselineMetric: ReturnType<typeof findPrimaryMetric>,
+  baselineIteration: number | undefined,
+): string {
+  if (!metric || !baselineMetric || metric.name !== baselineMetric.name || metric.value === baselineMetric.value) return ""
+  const relative = computeRelativeChange(
+    baselineMetric.value,
+    metric.value,
+    metric.higherIsBetter ?? baselineMetric.higherIsBetter ?? true,
+  )
+  const sign = relative > 0 ? "+" : ""
+  return ` (${sign}${(relative * 100).toFixed(1)}% vs baseline${baselineIteration === undefined ? "" : ` #${baselineIteration}`})`
 }
 
 function formatAsiValue(value: unknown): string {

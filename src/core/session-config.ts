@@ -52,13 +52,16 @@ export async function normalizeAutoresearchState(
 export function isAutoresearchScriptCommand(command: string, scriptPath?: string): boolean {
   let normalized = command.trim()
   if (!normalized) return false
+  if (hasShellControlOperator(normalized)) return false
 
-  normalized = normalized.replace(/^(?:\w+=\S*\s+)+/u, "")
+  normalized = stripLeadingAssignments(normalized)
 
   let previous = ""
   while (previous !== normalized) {
     previous = normalized
-    normalized = normalized.replace(/^(?:env|time|nice|nohup)(?:\s+-\S+(?:\s+\d+)?)?\s+/u, "")
+    normalized = normalized.replace(/^env(?:\s+-\S+)*(?:\s+\w+=\S*)*\s+/u, "")
+    normalized = normalized.replace(/^(?:time|nice|nohup)(?:\s+-\S+(?:\s+\d+)?)?\s+/u, "")
+    normalized = stripLeadingAssignments(normalized)
   }
 
   if (/^(?:bash|sh|source)\s+/u.test(normalized)) {
@@ -71,7 +74,15 @@ export function isAutoresearchScriptCommand(command: string, scriptPath?: string
   if (scriptPath) {
     return normalizedToken === scriptPath.replaceAll("\\", "/")
   }
-  return false
+  return normalizedToken.startsWith("/") && normalizedToken.endsWith("/autoresearch.sh")
+}
+
+function stripLeadingAssignments(command: string): string {
+  return command.replace(/^(?:\w+=\S*\s+)+/u, "")
+}
+
+function hasShellControlOperator(command: string): boolean {
+  return /(?:^|\s)(?:&&|\|\||[;|])(?:\s|$)/u.test(command)
 }
 
 export function normalizeExperimentConfig(

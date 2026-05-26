@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import { rm, stat, writeFile } from "node:fs/promises"
+import { chmod, mkdir, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { loadAutoresearchSession } from "../../src/server/storage"
 import { runtimeStore } from "../../src/server/runtime"
@@ -55,6 +55,15 @@ describe("server tools integration", () => {
       },
       context,
     )
+    await writeFile(path.join(workspace, "after.sh"), [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "payload=$(cat)",
+      "[[ \"$payload\" == *'\"event\": \"after\"'* ]] || { echo 'missing after event' >&2; exit 1; }",
+      "[[ \"$payload\" == *'\"decision\": \"keep\"'* ]] || { echo 'missing keep decision' >&2; exit 1; }",
+      "[[ \"$payload\" == *'\"commit\":'* ]] || { echo 'missing commit' >&2; exit 1; }",
+      "echo '{\"message\":\"after saw keep\"}'",
+    ].join("\n"), "utf8")
 
     const runResult = await runExperimentTool.execute({ summary: "Baseline improvement attempt." }, context)
     expect(typeof runResult).toBe("object")
@@ -64,7 +73,8 @@ describe("server tools integration", () => {
     const recordedRun = sessionAfterRun.state.runs[0]
     expect(recordedRun?.status).toBe("completed")
     expect(recordedRun?.metrics.map((metric) => metric.name)).toEqual(["accuracy", "latency_ms"])
-    expect(sessionAfterRun.state.hooks).toHaveLength(2)
+    expect(sessionAfterRun.state.hooks).toHaveLength(1)
+    expect(sessionAfterRun.state.hooks[0]?.kind).toBe("before")
     expect(runtimeStore.get(context.sessionID)?.autoResumePending).toBe(true)
     expect(context.asked).toHaveLength(1)
     expect(context.asked[0]?.permission).toBe("bash")
@@ -76,14 +86,169 @@ describe("server tools integration", () => {
     expect(keptRun?.decision).toBe("keep")
     expect(keptRun?.status).toBe("kept")
     expect(typeof keptRun?.commit).toBe("string")
-    expect(runtimeStore.get(context.sessionID)?.autoResumePending).toBe(false)
+    expect(sessionAfterKeep.state.hooks).toHaveLength(2)
+    expect(sessionAfterKeep.state.hooks[1]?.kind).toBe("after")
+    expect(sessionAfterKeep.state.hooks[1]?.message).toBe("after saw keep")
+    expect(runtimeStore.get(context.sessionID)?.autoResumePending).toBe(true)
 
     const gitCount = (await Bun.$`git rev-list --count HEAD`.cwd(workspace).text()).trim()
     expect(gitCount).toBe("2")
+    const commitMessage = await Bun.$`git log -1 --format=%B`.cwd(workspace).text()
+    const resultTrailer = readCommitJsonTrailer<Record<string, unknown>>(commitMessage, "Autoresearch-Result")
+    const metricsTrailer = readCommitJsonTrailer<Array<Record<string, unknown>>>(commitMessage, "Autoresearch-Metrics")
+    expect(resultTrailer).toEqual(expect.objectContaining({
+      decision: "keep",
+      exitCode: 0,
+      iteration: 1,
+      runId: keptRun?.id,
+      status: "kept",
+    }))
+    expect(metricsTrailer).toEqual([
+      expect.objectContaining({ higherIsBetter: true, name: "accuracy", value: 0.91 }),
+      expect.objectContaining({ higherIsBetter: false, name: "latency_ms", unit: "ms", value: 120 }),
+    ])
     const appText = await readText(path.join(workspace, "app.txt"))
     expect(appText.trim()).toBe("optimized")
     expect(context.asked).toHaveLength(2)
     expect(context.asked[1]?.patterns).toEqual(["git commit"])
+  })
+
+  it("keeps quoted, deleted, renamed, and untracked paths with trace trailers", async () => {
+    const workspace = await createFixtureWorkspace("stable-benchmark")
+    const context = createToolContext(workspace)
+    const runExperimentTool = createRunExperimentTool()
+    const quotedRelative = "quoted dir/odd 'name.txt"
+    const renamedFrom = "renamed-from.txt"
+    const renamedTo = "renamed dir/renamed to 'target.txt"
+    const deletedRelative = "delete me.txt"
+    const untrackedRelative = "new file 'added.txt"
+
+    await mkdir(path.join(workspace, "quoted dir"), { recursive: true })
+    await writeFile(path.join(workspace, quotedRelative), "baseline\n", "utf8")
+    await writeFile(path.join(workspace, renamedFrom), "rename me\n", "utf8")
+    await writeFile(path.join(workspace, deletedRelative), "delete me\n", "utf8")
+    await Bun.$`git add -- ${quotedRelative} ${renamedFrom} ${deletedRelative}`.cwd(workspace).quiet()
+    await Bun.$`git commit -m "seed edge paths"`.cwd(workspace).quiet()
+
+    await writeFile(path.join(workspace, "benchmark.sh"), [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "mkdir -p \"renamed dir\"",
+      "printf 'optimized\\n' > app.txt",
+      "printf 'changed\\n' > \"quoted dir/odd 'name.txt\"",
+      "git mv renamed-from.txt \"renamed dir/renamed to 'target.txt\"",
+      "rm \"delete me.txt\"",
+      "printf 'fresh\\n' > \"new file 'added.txt\"",
+      "echo 'METRIC accuracy=0.93 higher'",
+      "echo 'METRIC latency_ms=110 ms lower'",
+    ].join("\n"), "utf8")
+    await Bun.$`git add -- benchmark.sh`.cwd(workspace).quiet()
+    await Bun.$`git commit -m "edge benchmark"`.cwd(workspace).quiet()
+
+    await initExperimentTool.execute(
+      {
+        checks: ["./check.sh"],
+        command: "./benchmark.sh",
+        name: "git-edge-paths",
+        objective: "Keep traceable changes across awkward paths.",
+        primaryMetric: "accuracy",
+      },
+      context,
+    )
+
+    await runExperimentTool.execute({ summary: "Exercise awkward git paths." }, context)
+    await logExperimentTool.execute({ decision: "keep", summary: "Keep edge path coverage." }, context)
+
+    const session = await loadAutoresearchSession(workspace)
+    const keptRun = session.state.runs[0]
+    expect(keptRun?.changes?.modified).toEqual(expect.arrayContaining([quotedRelative, renamedTo, deletedRelative]))
+    expect(keptRun?.changes?.untracked).toEqual(expect.arrayContaining([untrackedRelative]))
+    expect(keptRun?.status).toBe("kept")
+    expect(typeof keptRun?.commit).toBe("string")
+
+    expect((await Bun.$`git show ${`HEAD:${quotedRelative}`}`.cwd(workspace).text()).trim()).toBe("changed")
+    expect((await Bun.$`git show ${`HEAD:${renamedTo}`}`.cwd(workspace).text()).trim()).toBe("rename me")
+    expect((await Bun.$`git show ${`HEAD:${untrackedRelative}`}`.cwd(workspace).text()).trim()).toBe("fresh")
+    expect(await gitObjectExists(workspace, `HEAD:${renamedFrom}`)).toBe(false)
+    expect(await gitObjectExists(workspace, `HEAD:${deletedRelative}`)).toBe(false)
+
+    const commitMessage = await Bun.$`git log -1 --format=%B`.cwd(workspace).text()
+    const resultTrailer = readCommitJsonTrailer<Record<string, unknown>>(commitMessage, "Autoresearch-Result")
+    const metricsTrailer = readCommitJsonTrailer<Array<Record<string, unknown>>>(commitMessage, "Autoresearch-Metrics")
+    expect(resultTrailer).toEqual(expect.objectContaining({
+      decision: "keep",
+      iteration: 1,
+      runId: keptRun?.id,
+      status: "kept",
+      summary: "Keep edge path coverage.",
+    }))
+    expect(metricsTrailer).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "accuracy", value: 0.93 }),
+      expect.objectContaining({ name: "latency_ms", unit: "ms", value: 110 }),
+    ]))
+  })
+
+  it("keeps runs without requiring git when the workspace is not a repository", async () => {
+    const workspace = await createFixtureWorkspace("stable-benchmark")
+    const context = createToolContext(workspace)
+    const runExperimentTool = createRunExperimentTool()
+    await rm(path.join(workspace, ".git"), { force: true, recursive: true })
+
+    await initExperimentTool.execute(
+      {
+        checks: ["./check.sh"],
+        command: "./benchmark.sh",
+        name: "non-git-workspace",
+        objective: "Allow autoresearch in projects before git is initialized.",
+        primaryMetric: "accuracy",
+      },
+      context,
+    )
+
+    await runExperimentTool.execute({}, context)
+    const logResult = await logExperimentTool.execute({ decision: "keep" }, context)
+
+    const session = await loadAutoresearchSession(workspace)
+    expect(session.state.runs[0]?.decision).toBe("keep")
+    expect(session.state.runs[0]?.status).toBe("kept")
+    expect(session.state.runs[0]?.commit).toBeUndefined()
+    expect(toolOutput(logResult)).toContain("Skipping commit because the workdir is not a git repository.")
+  })
+
+  it("leaves a run pending when git commit fails", async () => {
+    const workspace = await createFixtureWorkspace("stable-benchmark")
+    const context = createToolContext(workspace)
+    const runExperimentTool = createRunExperimentTool()
+
+    await initExperimentTool.execute(
+      {
+        checks: ["./check.sh"],
+        command: "./benchmark.sh",
+        name: "git-failure",
+        objective: "Do not mark a run kept when commit hooks reject it.",
+        primaryMetric: "accuracy",
+      },
+      context,
+    )
+
+    await runExperimentTool.execute({}, context)
+    const hookPath = path.join(workspace, ".git", "hooks", "pre-commit")
+    await writeFile(hookPath, [
+      "#!/usr/bin/env bash",
+      "echo 'pre-commit blocked autoresearch keep' >&2",
+      "exit 42",
+    ].join("\n"), "utf8")
+    await chmod(hookPath, 0o755)
+
+    const logResult = await logExperimentTool.execute({ decision: "keep" }, context)
+
+    expect(toolOutput(logResult)).toContain("Unable to keep run #1 because git commit failed.")
+    expect(toolOutput(logResult)).toContain("pre-commit blocked autoresearch keep")
+    const session = await loadAutoresearchSession(workspace)
+    expect(session.state.runs[0]?.decision).toBe("pending")
+    expect(session.state.runs[0]?.status).toBe("completed")
+    expect(session.state.runs[0]?.commit).toBeUndefined()
+    expect((await Bun.$`git rev-list --count HEAD`.cwd(workspace).text()).trim()).toBe("1")
   })
 
   it("rejects ad hoc run commands when autoresearch.sh is present", async () => {
@@ -107,6 +272,68 @@ describe("server tools integration", () => {
       "autoresearch.sh exists for this session, so run_experiment must use it as the canonical entrypoint.",
       "Use ./autoresearch.sh instead of ./benchmark.sh.",
     ].join("\n"))
+  })
+
+  it("marks benchmark timeouts as crashed", async () => {
+    const workspace = await createFixtureWorkspace("stable-benchmark")
+    const context = createToolContext(workspace)
+    const runExperimentTool = createRunExperimentTool()
+
+    await initExperimentTool.execute(
+      {
+        checks: ["./check.sh"],
+        command: "./benchmark.sh",
+        name: "benchmark-timeout",
+        objective: "Stop runaway benchmarks.",
+        primaryMetric: "accuracy",
+      },
+      context,
+    )
+    await writeFile(path.join(workspace, "benchmark.sh"), [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "sleep 2",
+      "echo 'METRIC accuracy=0.99 higher'",
+    ].join("\n"), "utf8")
+
+    await runExperimentTool.execute({ timeout_seconds: 0.05 }, context)
+
+    const session = await loadAutoresearchSession(workspace)
+    expect(session.state.runs[0]?.status).toBe("crashed")
+    expect(session.state.runs[0]?.exitCode).toBe(124)
+  })
+
+  it("marks checks timeouts as checks_failed", async () => {
+    const workspace = await createFixtureWorkspace("stable-benchmark")
+    const context = createToolContext(workspace)
+    const runExperimentTool = createRunExperimentTool()
+    const slowCheck = path.join(workspace, "slow-check.sh")
+    await writeFile(slowCheck, [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "sleep 2",
+    ].join("\n"), "utf8")
+    await chmod(slowCheck, 0o755)
+
+    await initExperimentTool.execute(
+      {
+        checks: ["./slow-check.sh"],
+        command: "./benchmark.sh",
+        name: "checks-timeout",
+        objective: "Stop runaway checks.",
+        primaryMetric: "accuracy",
+      },
+      context,
+    )
+
+    await runExperimentTool.execute({ checks_timeout_seconds: 0.05 }, context)
+
+    const session = await loadAutoresearchSession(workspace)
+    expect(session.state.runs[0]?.status).toBe("checks_failed")
+    expect(session.state.runs[0]?.checks?.[0]).toEqual(expect.objectContaining({
+      exitCode: 124,
+      passed: false,
+    }))
   })
 
   it("can log a nested-workdir run after runtime state is lost", async () => {
@@ -321,6 +548,40 @@ describe("server tools integration", () => {
     expect(html).toContain("autoresearch.jsonl is missing")
   })
 
+  it("blocks loop mutations when autoresearch.jsonl contains invalid entries", async () => {
+    const workspace = await createFixtureWorkspace("stable-benchmark")
+    const context = createToolContext(workspace)
+    const runExperimentTool = createRunExperimentTool()
+
+    await initExperimentTool.execute(
+      {
+        checks: ["./check.sh"],
+        command: "./benchmark.sh",
+        name: "invalid-jsonl",
+        objective: "Require recovery before mutating corrupted session history.",
+        primaryMetric: "accuracy",
+      },
+      context,
+    )
+
+    await runExperimentTool.execute({}, context)
+    const jsonlPath = path.join(workspace, "autoresearch.jsonl")
+    await writeFile(jsonlPath, `${await readText(jsonlPath)}{not valid json}\n`, "utf8")
+
+    const statusResult = await controlTool.execute({ action: "status" }, context)
+    expect(statusResult).toContain("Durability: recovery required.")
+    expect(statusResult).toContain("autoresearch.jsonl contains invalid JSONL entries")
+
+    const runResult = await runExperimentTool.execute({}, context)
+    expect(runResult).toContain("Autoresearch session recovery is required before running a new experiment.")
+
+    const logResult = await logExperimentTool.execute({ decision: "discard" }, context)
+    expect(logResult).toContain("Autoresearch session recovery is required before logging a run decision.")
+
+    const pauseResult = await controlTool.execute({ action: "pause" }, context)
+    expect(pauseResult).toContain("Autoresearch session recovery is required before switching autoresearch pause.")
+  })
+
   it("exports an HTML dashboard with signal cards and finalize preview", async () => {
     const workspace = await createFixtureWorkspace("stable-benchmark")
     const context = createToolContext(workspace)
@@ -380,3 +641,30 @@ describe("server tools integration", () => {
     expect(html).toContain("autoresearch/run-1")
   })
 })
+
+function readCommitJsonTrailer<T>(commitMessage: string, key: string): T {
+  const prefix = `${key}: `
+  const line = commitMessage.split(/\r?\n/).find((item) => item.startsWith(prefix))
+  if (!line) {
+    throw new Error(`Missing ${key} trailer in commit message:\n${commitMessage}`)
+  }
+  return JSON.parse(line.slice(prefix.length)) as T
+}
+
+function toolOutput(result: unknown): string {
+  if (typeof result === "string") return result
+  if (result && typeof result === "object" && "output" in result) {
+    const output = (result as { output?: unknown }).output
+    if (typeof output === "string") return output
+  }
+  return String(result)
+}
+
+async function gitObjectExists(workspace: string, objectSpec: string): Promise<boolean> {
+  const proc = Bun.spawn(["git", "cat-file", "-e", objectSpec], {
+    cwd: workspace,
+    stderr: "pipe",
+    stdout: "pipe",
+  })
+  return await proc.exited === 0
+}

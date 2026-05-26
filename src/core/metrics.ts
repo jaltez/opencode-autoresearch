@@ -1,10 +1,11 @@
 import type { ExperimentRun, MetricValue, SecondaryMetricRegistry } from "./types"
 
 const METRIC_PATTERN =
-  /^METRIC\s+([A-Za-z0-9_.-]+)\s*(?:=|:)?\s*(-?(?:\d+(?:\.\d+)?|\.\d+))(?:\s*([%A-Za-z][\w/%.-]*))?(?:\s+(higher|lower))?\s*$/i
+  /^METRIC\s+([A-Za-z0-9_.µ-]+)\s*(?:=|:)?\s*(-?(?:\d+(?:\.\d+)?|\.\d+))(?:\s+([%A-Za-zµ][\w/%µ.-]*))?(?:\s+(higher|lower))?\s*$/iu
 
 const LOWER_IS_BETTER = ["duration", "error", "latency", "loss", "memory", "time"]
 const HIGHER_IS_BETTER = ["accuracy", "f1", "ops", "precision", "qps", "recall", "rps", "score", "success", "throughput"]
+const DENIED_METRIC_NAMES = new Set(["__proto__", "constructor", "prototype"])
 
 export function parseMetricLine(line: string): MetricValue | undefined {
   const trimmed = line.trim()
@@ -12,6 +13,8 @@ export function parseMetricLine(line: string): MetricValue | undefined {
   if (!match) return undefined
 
   const [, rawName, rawValue, rawUnit, rawDirection] = match
+  if (DENIED_METRIC_NAMES.has(rawName)) return undefined
+
   const value = Number(rawValue)
   if (!Number.isFinite(value)) return undefined
 
@@ -34,16 +37,21 @@ export function parseMetricLine(line: string): MetricValue | undefined {
 }
 
 export function parseMetricLines(output: string): MetricValue[] {
-  return output
-    .split(/\r?\n/u)
-    .map(parseMetricLine)
-    .filter((value): value is MetricValue => Boolean(value))
+  const metrics = new Map<string, MetricValue>()
+  for (const line of output.split(/\r?\n/u)) {
+    const metric = parseMetricLine(line)
+    if (!metric) continue
+    metrics.set(metric.name, metric)
+  }
+
+  return [...metrics.values()]
 }
 
 export function inferMetricUnit(name: string, explicitUnit?: string): string | undefined {
   if (explicitUnit) return explicitUnit
 
   const normalized = name.toLowerCase()
+  if (normalized.endsWith("µs") || normalized.endsWith("_us") || normalized.endsWith("_microseconds")) return "µs"
   if (normalized.endsWith("_ms") || normalized.includes("millisecond")) return "ms"
   if (normalized.endsWith("_s") || normalized.includes("second")) return "s"
   if (normalized.endsWith("_pct") || normalized.includes("percent")) return "%"
@@ -53,6 +61,7 @@ export function inferMetricUnit(name: string, explicitUnit?: string): string | u
 
 export function inferHigherIsBetter(name: string): boolean {
   const normalized = name.toLowerCase()
+  if (normalized.endsWith("µs") || normalized.endsWith("_us") || normalized.endsWith("_ms") || normalized.endsWith("_s")) return false
   if (LOWER_IS_BETTER.some((token) => normalized.includes(token))) return false
   if (HIGHER_IS_BETTER.some((token) => normalized.includes(token))) return true
   return true

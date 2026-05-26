@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test"
+import { chmod } from "node:fs/promises"
+import path from "node:path"
 import plugin from "../../src/server/index"
+import { loadAutoresearchSession } from "../../src/server/storage"
 import { runtimeStore } from "../../src/server/runtime"
 import { initExperimentTool } from "../../src/server/tools/init-experiment"
 import { createRunExperimentTool } from "../../src/server/tools/run-experiment"
@@ -12,6 +15,27 @@ afterEach(() => {
 })
 
 describe("server hooks integration", () => {
+  it("skips hook files that are not executable", async () => {
+    const workspace = await createFixtureWorkspace("stable-benchmark")
+    const context = createToolContext(workspace)
+    const runExperimentTool = createRunExperimentTool()
+
+    await initExperimentTool.execute(
+      {
+        checks: ["./check.sh"],
+        command: "./benchmark.sh",
+        name: "stable-benchmark",
+      },
+      context,
+    )
+    await chmod(path.join(workspace, "before.sh"), 0o644)
+
+    await runExperimentTool.execute({}, context)
+
+    const session = await loadAutoresearchSession(workspace)
+    expect(session.state.hooks).toHaveLength(0)
+  })
+
   it("queues one follow-up prompt on idle when a run is waiting for continuation", async () => {
     const workspace = await createFixtureWorkspace("stable-benchmark")
     const context = createToolContext(workspace)
@@ -65,6 +89,8 @@ describe("server hooks integration", () => {
         query: { directory: workspace },
       }),
     )
+    const promptText = promptCalls[0].body.parts.map((part: { text?: string }) => part.text ?? "").join("\n")
+    expect(promptText).toContain("do not cheat on the benchmarks")
 
     await hooks.event?.({
       event: {
@@ -114,10 +140,12 @@ describe("server hooks integration", () => {
     expect(system.system.join("\n")).toContain("./autoresearch.sh")
     expect(system.system.join("\n")).toContain("autoresearch.ideas.md")
     expect(system.system.join("\n")).toContain("ASI")
+    expect(system.system.join("\n")).toContain("do not cheat on the benchmarks")
 
     const compacting = { context: [] as string[], prompt: undefined as string | undefined }
     await hooks["experimental.session.compacting"]?.({ sessionID: context.sessionID }, compacting)
     expect(compacting.prompt).toContain("Summarize the autoresearch session deterministically.")
+    expect(compacting.prompt).toContain("do not cheat on the benchmarks")
     expect(compacting.prompt).toContain("## Session")
     expect(compacting.prompt).toContain("## Next Step")
   })

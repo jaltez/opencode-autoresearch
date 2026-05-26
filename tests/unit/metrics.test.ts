@@ -28,6 +28,61 @@ describe("metrics", () => {
     ])
   })
 
+  it("supports reference-compatible metric names and keeps the last duplicate value", () => {
+    expect(parseMetricLines([
+      "METRIC total_µs=15200",
+      "METRIC compile.ms=4200",
+      "METRIC total_µs=14900",
+    ].join("\n"))).toEqual([
+      {
+        higherIsBetter: false,
+        name: "total_µs",
+        unit: "µs",
+        value: 14900,
+      },
+      {
+        higherIsBetter: true,
+        name: "compile.ms",
+        unit: undefined,
+        value: 4200,
+      },
+    ])
+  })
+
+  it("rejects unsafe or non-finite metric lines", () => {
+    expect(parseMetricLines([
+      "METRIC __proto__=1",
+      "METRIC constructor=2",
+      "METRIC prototype=3",
+      "METRIC safe=Infinity",
+      "METRIC also_safe=NaN",
+      "METRIC hex=0x10",
+      "METRIC valid=4",
+    ].join("\n"))).toEqual([
+      {
+        higherIsBetter: true,
+        name: "valid",
+        unit: undefined,
+        value: 4,
+      },
+    ])
+  })
+
+  it("continues to support opencode metric extensions", () => {
+    expect(parseMetricLine("METRIC loss: 0.12 lower")).toEqual({
+      higherIsBetter: false,
+      name: "loss",
+      unit: undefined,
+      value: 0.12,
+    })
+    expect(parseMetricLine("METRIC latency-ms=123 ms lower")).toEqual({
+      higherIsBetter: false,
+      name: "latency-ms",
+      unit: "ms",
+      value: 123,
+    })
+  })
+
   it("gives higher confidence to stable samples", () => {
     expect(computeConfidence([1, 1.01, 0.99, 1.02])).toBeGreaterThan(computeConfidence([1, 2.5, 0.2, 3.2]))
   })

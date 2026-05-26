@@ -7,6 +7,12 @@ import { loadAutoresearchSession } from "../storage"
 import { isGitRepository } from "../git"
 import { runtimeStore } from "../runtime"
 
+interface GitResult {
+  exitCode: number
+  output: string
+  stderr: string
+}
+
 export const autoresearchFinalizeTool = tool({
   description: "Plan or create review branches from kept autoresearch runs, grouped by non-overlapping file changes.",
   args: {
@@ -108,7 +114,7 @@ async function createFinalizeBranches(
 
       activeBranch = group.branchName
       await ensureGitSuccess(runGit(cwd, ["switch", "-c", group.branchName, baseRef]), `Failed to create ${group.branchName}`)
-      await ensureGitSuccess(checkoutFilesFromCommit(cwd, lastCommit, group.files), `Failed to apply files to ${group.branchName}`)
+      await ensureGitSuccess(applyFilesFromCommit(cwd, lastCommit, group.files), `Failed to apply files to ${group.branchName}`)
 
       const hasDiff = await branchHasStagedDiff(cwd)
       if (!hasDiff) {
@@ -217,8 +223,32 @@ async function latestStashRef(cwd: string): Promise<string | undefined> {
   return ref || undefined
 }
 
-async function checkoutFilesFromCommit(cwd: string, commit: string, files: readonly string[]): Promise<{ exitCode: number; output: string; stderr: string }> {
-  return runGit(cwd, ["checkout", commit, "--", ...files])
+async function applyFilesFromCommit(cwd: string, commit: string, files: readonly string[]): Promise<GitResult> {
+  const existingFiles: string[] = []
+  const deletedFiles: string[] = []
+
+  for (const filePath of files) {
+    if (await gitPathExists(cwd, commit, filePath)) {
+      existingFiles.push(filePath)
+    } else {
+      deletedFiles.push(filePath)
+    }
+  }
+
+  const results: GitResult[] = []
+  if (existingFiles.length > 0) {
+    const checkout = await runGit(cwd, ["checkout", commit, "--", ...existingFiles])
+    if (checkout.exitCode !== 0) return checkout
+    results.push(checkout)
+  }
+
+  if (deletedFiles.length > 0) {
+    const remove = await runGit(cwd, ["rm", "-f", "--ignore-unmatch", "--", ...deletedFiles])
+    if (remove.exitCode !== 0) return remove
+    results.push(remove)
+  }
+
+  return combineGitResults(results)
 }
 
 async function branchHasStagedDiff(cwd: string): Promise<boolean> {
@@ -300,7 +330,7 @@ async function verifyFinalizeBranches(cwd: string, input: {
     for (const group of input.groups) {
       const lastCommit = group.commits.at(-1)
       if (!lastCommit || group.files.length === 0) continue
-      await ensureGitSuccess(checkoutFilesFromCommit(cwd, lastCommit, group.files), `Failed to stage verification files for ${group.branchName}`)
+      await ensureGitSuccess(applyFilesFromCommit(cwd, lastCommit, group.files), `Failed to stage verification files for ${group.branchName}`)
     }
 
     const tree = await runGit(cwd, ["write-tree"])
@@ -331,7 +361,12 @@ function buildFinalizeCommitMessage(group: ReturnType<typeof buildFinalizePlan>[
   return `autoresearch finalize: runs #${group.firstIteration}-#${group.lastIteration}`
 }
 
-async function runGit(cwd: string, args: string[]): Promise<{ exitCode: number; output: string; stderr: string }> {
+async function gitPathExists(cwd: string, commit: string, filePath: string): Promise<boolean> {
+  const result = await runGit(cwd, ["cat-file", "-e", `${commit}:${filePath}`])
+  return result.exitCode === 0
+}
+
+async function runGit(cwd: string, args: string[]): Promise<GitResult> {
   const proc = Bun.spawn(["git", ...args], { cwd, stderr: "pipe", stdout: "pipe" })
   const [output, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -339,6 +374,14 @@ async function runGit(cwd: string, args: string[]): Promise<{ exitCode: number; 
     proc.exited,
   ])
   return { exitCode, output, stderr }
+}
+
+function combineGitResults(results: readonly GitResult[]): GitResult {
+  return {
+    exitCode: 0,
+    output: results.map((result) => result.output.trim()).filter(Boolean).join("\n"),
+    stderr: results.map((result) => result.stderr.trim()).filter(Boolean).join("\n"),
+  }
 }
 
 function firstNonEmpty(...values: string[]): string {
@@ -353,7 +396,7 @@ function parseNameOnly(output: string): string[] {
 }
 
 async function ensureGitSuccess(
-  promise: Promise<{ exitCode: number; output: string; stderr: string }> | { exitCode: number; output: string; stderr: string },
+  promise: Promise<GitResult> | GitResult,
   message: string,
 ): Promise<void> {
   const result = await promise

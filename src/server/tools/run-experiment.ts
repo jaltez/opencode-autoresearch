@@ -4,21 +4,25 @@ import { tool } from "@opencode-ai/plugin"
 import { Effect } from "effect"
 import { evaluateMetricCheckExpression, parseMetricCheckExpression } from "../../core/checks"
 import { parseMetricLines } from "../../core/metrics"
-import { autoresearchHookCandidates, resolveAutoresearchPaths } from "../../core/paths"
 import { AUTORESEARCH_CANONICAL_COMMAND, isAutoresearchScriptCommand } from "../../core/session-config"
-import { createHookInvocation, DEFAULT_HOOK_TIMEOUT_MS } from "../../core/hooks"
-import type { ExperimentCheckResult, ExperimentRun, HookInvocation, MetricValue, RunStatus } from "../../core/types"
+import type { ExperimentCheckResult, ExperimentRun, MetricValue, RunStatus } from "../../core/types"
 import { formatAutoresearchRecoveryMessage } from "../durability"
 import { preservedArtifactPaths, captureGitChanges } from "../git"
+import { executeAutoresearchHook } from "../hook-runner"
 import { appendJsonlEntry, loadAutoresearchSession, writeStateSnapshot } from "../storage"
 import { runtimeStore } from "../runtime"
+
+const DEFAULT_EXPERIMENT_TIMEOUT_MS = 600_000
+const DEFAULT_CHECKS_TIMEOUT_MS = 300_000
 
 export function createRunExperimentTool() {
   return tool({
     description: "Run the configured experiment command, parse METRIC lines, and record the result in autoresearch.jsonl.",
     args: {
       command: tool.schema.string().optional(),
+      checks_timeout_seconds: tool.schema.number().positive().optional(),
       summary: tool.schema.string().optional(),
+      timeout_seconds: tool.schema.number().positive().optional(),
       workDir: tool.schema.string().optional(),
     },
     async execute(args, context) {
@@ -57,6 +61,8 @@ export function createRunExperimentTool() {
       }))
 
       runtimeStore.markAutomated(context.sessionID, session.paths.directory)
+      const experimentTimeoutMs = secondsToMilliseconds(args.timeout_seconds, DEFAULT_EXPERIMENT_TIMEOUT_MS)
+      const checksTimeoutMs = secondsToMilliseconds(args.checks_timeout_seconds, DEFAULT_CHECKS_TIMEOUT_MS)
 
       const iteration = session.state.runs.length + 1
       const startedAt = new Date().toISOString()
@@ -64,17 +70,28 @@ export function createRunExperimentTool() {
         context,
         directory: session.paths.directory,
         kind: "before",
+        state: session.state,
         stateSummary: args.summary,
       })
       if (beforeHook) {
         await appendJsonlEntry(session.paths, { at: beforeHook.at, hook: beforeHook, type: "hook" })
       }
 
-      const commandResult = await runShellCommand(session.paths.directory, command, context.abort)
+      const commandResult = await runShellCommand(session.paths.directory, command, context.abort, {
+        timeoutMs: experimentTimeoutMs,
+      })
       const metrics = parseMetricLines(commandResult.output)
-      const checks = await runChecks(session.paths.directory, session.paths.checks, config.checks ?? [], metrics, context.abort)
+      const checks = commandResult.exitCode === 0
+        ? await runChecks(session.paths.directory, session.paths.checks, config.checks ?? [], metrics, context.abort, checksTimeoutMs)
+        : []
       const hasFailedCheck = checks.some((item) => !item.passed)
-      const status: RunStatus = hasFailedCheck ? "checks_failed" : commandResult.exitCode === 0 ? "completed" : "failed"
+      const status: RunStatus = commandResult.timedOut
+        ? "crashed"
+        : hasFailedCheck
+          ? "checks_failed"
+          : commandResult.exitCode === 0
+            ? "completed"
+            : "failed"
       const changes = await captureGitChanges(session.paths.directory, preservedArtifactPaths(session.paths.directory))
 
       const run: ExperimentRun = {
@@ -96,17 +113,6 @@ export function createRunExperimentTool() {
       }
 
       await appendJsonlEntry(session.paths, { at: run.endedAt ?? new Date().toISOString(), run, type: "run" })
-      const afterHook = await executeHookIfPresent({
-        context,
-        directory: session.paths.directory,
-        kind: "after",
-        run,
-        stateSummary: args.summary,
-      })
-      if (afterHook) {
-        await appendJsonlEntry(session.paths, { at: afterHook.at, hook: afterHook, type: "hook" })
-      }
-
       const nextSession = await loadAutoresearchSession(context.directory, workDir)
       await writeStateSnapshot(nextSession.paths, nextSession.state)
 
@@ -147,13 +153,14 @@ async function runChecks(
   checks: readonly string[],
   metrics: readonly MetricValue[],
   signal: AbortSignal,
+  timeoutMs: number,
 ): Promise<ExperimentCheckResult[]> {
   const results: ExperimentCheckResult[] = []
   const hasChecksScript = await Bun.file(checksScriptPath).exists()
 
   if (hasChecksScript) {
     const command = formatScriptCommand(cwd, checksScriptPath)
-    const result = await runShellCommand(cwd, command, signal)
+    const result = await runShellCommand(cwd, command, signal, { timeoutMs })
     results.push({
       command,
       exitCode: result.exitCode,
@@ -173,7 +180,7 @@ async function runChecks(
       continue
     }
 
-    const result = await runShellCommand(cwd, command, signal)
+    const result = await runShellCommand(cwd, command, signal, { timeoutMs })
     results.push({
       command,
       exitCode: result.exitCode,
@@ -187,34 +194,20 @@ async function runChecks(
 async function executeHookIfPresent(input: {
   context: Parameters<ReturnType<typeof createRunExperimentTool>["execute"]>[1]
   directory: string
-  kind: HookInvocation["kind"]
+  kind: "before"
   run?: ExperimentRun
+  state: Awaited<ReturnType<typeof loadAutoresearchSession>>["state"]
   stateSummary?: string
-}): Promise<HookInvocation | undefined> {
-  const scriptPath = await findExistingHookScript(input.directory, input.kind)
-  if (!scriptPath) return undefined
-
-  const payload = {
+}) {
+  return executeAutoresearchHook({
+    abort: input.context.abort,
+    directory: input.directory,
+    kind: input.kind,
     projectDir: input.context.directory,
     run: input.run,
     sessionId: input.context.sessionID,
+    state: input.state,
     stateSummary: input.stateSummary,
-    workDir: input.directory,
-  }
-
-  const result = await runShellCommand(input.directory, formatScriptCommand(input.directory, scriptPath), input.context.abort, {
-    stdin: `${JSON.stringify(payload, null, 2)}\n`,
-    timeoutMs: DEFAULT_HOOK_TIMEOUT_MS,
-  })
-
-  return createHookInvocation({
-    at: new Date().toISOString(),
-    exitCode: result.exitCode,
-    kind: input.kind,
-    scriptPath,
-    status: result.timedOut ? "timed_out" : result.exitCode === 0 ? "ok" : "failed",
-    stderr: result.stderr,
-    stdout: result.output,
   })
 }
 
@@ -224,45 +217,63 @@ async function runShellCommand(
   abort: AbortSignal,
   options?: { stdin?: string; timeoutMs?: number },
 ): Promise<{ exitCode: number; output: string; outputWithStderr: string; stderr: string; timedOut: boolean }> {
-  const controller = new AbortController()
-  const onAbort = () => controller.abort(abort.reason)
+  let timedOut = false
+  let proc: ReturnType<typeof spawn> | undefined
+  const kill = () => {
+    if (!proc?.pid) return
+    try {
+      process.kill(-proc.pid, "SIGTERM")
+    } catch {
+      try {
+        process.kill(proc.pid, "SIGTERM")
+      } catch {
+        // Process may have already exited.
+      }
+    }
+  }
+  const onAbort = () => kill()
   abort.addEventListener("abort", onAbort, { once: true })
   const timeout =
     options?.timeoutMs === undefined
       ? undefined
       : setTimeout(() => {
-          controller.abort("timeout")
+          timedOut = true
+          kill()
         }, options.timeoutMs)
 
   try {
-    const proc = spawn("/bin/bash", ["-lc", command], {
+    const child = spawn("/bin/bash", ["-lc", command], {
       cwd,
-      signal: controller.signal,
+      detached: true,
       stdio: "pipe",
     })
+    proc = child
+    if (abort.aborted) kill()
 
-    const outputPromise = streamToText(proc.stdout)
-    const stderrPromise = streamToText(proc.stderr)
+    const outputPromise = streamToText(child.stdout)
+    const stderrPromise = streamToText(child.stderr)
 
-    if (options?.stdin && proc.stdin) {
-      proc.stdin.write(options.stdin)
+    if (options?.stdin && child.stdin) {
+      child.stdin.write(options.stdin)
     }
-    proc.stdin?.end()
+    child.stdin?.end()
 
     const exitCode = await new Promise<number>((resolve) => {
-      proc.once("close", (code) => resolve(code ?? 0))
-      proc.once("error", () => resolve(124))
+      child.once("close", (code) => resolve(timedOut ? 124 : code ?? 0))
+      child.once("error", () => resolve(124))
     })
     const [output, stderr] = await Promise.all([outputPromise, stderrPromise])
+    const timeoutMessage = timedOut ? `Command timed out after ${options?.timeoutMs ?? 0}ms.` : ""
+    const combinedStderr = [stderr, timeoutMessage].filter(Boolean).join(stderr && timeoutMessage ? "\n" : "")
 
-    const outputWithStderr = [output, stderr].filter(Boolean).join(output && stderr ? "\n" : "")
+    const outputWithStderr = [output, combinedStderr].filter(Boolean).join(output && combinedStderr ? "\n" : "")
 
     return {
       exitCode,
       output,
       outputWithStderr,
-      stderr,
-      timedOut: controller.signal.aborted && options?.timeoutMs !== undefined,
+      stderr: combinedStderr,
+      timedOut,
     }
   } finally {
     abort.removeEventListener("abort", onAbort)
@@ -270,12 +281,9 @@ async function runShellCommand(
   }
 }
 
-async function findExistingHookScript(directory: string, kind: HookInvocation["kind"]): Promise<string | undefined> {
-  const paths = resolveAutoresearchPaths(directory)
-  for (const candidate of autoresearchHookCandidates(paths, kind)) {
-    if (await Bun.file(candidate).exists()) return candidate
-  }
-  return undefined
+function secondsToMilliseconds(value: number | undefined, fallbackMs: number): number {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) return fallbackMs
+  return Math.max(1, Math.ceil(value * 1000))
 }
 
 function formatScriptCommand(cwd: string, scriptPath: string): string {

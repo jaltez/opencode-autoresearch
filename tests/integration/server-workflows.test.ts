@@ -111,6 +111,55 @@ describe("server workflows integration", () => {
     expect(featureBOnB).toBe("improved-b")
   })
 
+  it("creates finalize branches for kept runs that delete files", async () => {
+    const workspace = await createFixtureWorkspace("finalize-benchmark")
+    const context = createToolContext(workspace)
+    const runExperimentTool = createRunExperimentTool()
+
+    await Bun.write(path.join(workspace, "benchmark.sh"), [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "rm feature-b.txt",
+      "echo 'METRIC accuracy=0.96 higher'",
+    ].join("\n"))
+    await Bun.write(path.join(workspace, "check.sh"), [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "test ! -f feature-b.txt",
+    ].join("\n"))
+    await Bun.$`git add -- benchmark.sh check.sh`.cwd(workspace).quiet()
+    await Bun.$`git commit -m "delete feature benchmark"`.cwd(workspace).quiet()
+
+    await initExperimentTool.execute(
+      {
+        checks: ["./check.sh"],
+        command: "./benchmark.sh",
+        name: "finalize-delete",
+        objective: "Finalize a run whose desired state removes a file.",
+      },
+      context,
+    )
+
+    await runExperimentTool.execute({ summary: "Delete feature B." }, context)
+    await logExperimentTool.execute({ decision: "keep", summary: "Delete feature B." }, context)
+
+    const finalizeResult = await autoresearchFinalizeTool.execute({ createBranches: true, prefix: "review" }, context)
+    if (
+      typeof finalizeResult === "string"
+      || !finalizeResult.metadata
+      || !Array.isArray((finalizeResult.metadata as { createdBranches?: unknown }).createdBranches)
+    ) {
+      throw new Error(`Expected finalize metadata, got string output: ${finalizeResult}`)
+    }
+
+    const createdBranches = finalizeResult.metadata.createdBranches as string[]
+    expect(createdBranches).toHaveLength(1)
+    const branchName = createdBranches[0]
+    expect(await gitObjectExists(workspace, `${branchName}:feature-b.txt`)).toBe(false)
+    expect((await Bun.$`git show ${`${branchName}:feature-a.txt`}`.cwd(workspace).text()).trim()).toBe("baseline-a")
+    expect(finalizeResult.output).toContain("Verified finalize branches: the union of review branches matches the final autoresearch branch.")
+  })
+
   it("stashes dirty worktree changes and keeps autoresearch artifacts out of finalize branches", async () => {
     const workspace = await createFixtureWorkspace("finalize-benchmark")
     const context = createToolContext(workspace)
@@ -164,3 +213,12 @@ describe("server workflows integration", () => {
     expect(text).toContain("Verified finalize branches: the union of review branches matches the final autoresearch branch.")
   })
 })
+
+async function gitObjectExists(workspace: string, objectSpec: string): Promise<boolean> {
+  const proc = Bun.spawn(["git", "cat-file", "-e", objectSpec], {
+    cwd: workspace,
+    stderr: "pipe",
+    stdout: "pipe",
+  })
+  return await proc.exited === 0
+}

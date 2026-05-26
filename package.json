@@ -1,8 +1,22 @@
 {
   "name": "opencode-autoresearch",
   "version": "0.1.0",
-  "private": true,
+  "description": "Autoresearch loop, benchmark, dashboard, and finalize plugin for opencode.",
+  "private": false,
+  "license": "UNLICENSED",
   "type": "module",
+  "keywords": [
+    "opencode",
+    "autoresearch",
+    "benchmark",
+    "experiments",
+    "plugin"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "package.json"
+  ],
   "exports": {
     "./server": "./dist/server/index.js",
     "./tui": "./dist/tui/index.js"
@@ -11,9 +25,13 @@
     "build": "bun run build:server && bun run build:tui",
     "build:server": "bun build ./src/server/index.ts --outdir ./dist/server --target bun",
     "build:tui": "bun run ./scripts/build-tui.ts",
+    "prepack": "bun run build",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "check": "bun run typecheck && bun test"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
   },
   "dependencies": {
     "@opencode-ai/plugin": "1.14.46",
