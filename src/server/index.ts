@@ -1,7 +1,12 @@
 import type { PluginModule } from "@opencode-ai/plugin"
 import { buildAutoresearchCompactionSummary } from "../core/compaction"
 import { AUTORESEARCH_CANONICAL_COMMAND } from "../core/session-config"
-import { injectAutoresearchConfig, type MutablePluginConfig } from "./commands"
+import {
+  AUTORESEARCH_AGENT,
+  injectAutoresearchConfig,
+  isAutoresearchAgent,
+  type MutablePluginConfig,
+} from "./commands"
 import { formatAutoresearchDurabilityReport } from "./durability"
 import { loadAutoresearchSession } from "./storage"
 import { runtimeStore } from "./runtime"
@@ -15,11 +20,18 @@ const plugin: PluginModule = {
       config: async (cfg) => {
         injectAutoresearchConfig(cfg as MutablePluginConfig)
       },
+      "chat.message": async ({ sessionID, agent }) => {
+        runtimeStore.setAgent(sessionID, agent)
+      },
+      "chat.params": async ({ sessionID, agent }) => {
+        runtimeStore.setAgent(sessionID, agent)
+      },
       event: async ({ event }) => {
         const sessionId = getEventSessionID(event)
         if (!sessionId) return
 
         if (event.type === "session.idle") {
+          if (!isAutoresearchSession(sessionId)) return
           if (!runtimeStore.shouldResume(sessionId)) return
           const runtime = runtimeStore.get(sessionId)
           const session = await loadAutoresearchSession(input.directory, runtime?.workDir)
@@ -65,6 +77,7 @@ const plugin: PluginModule = {
       },
       "experimental.chat.system.transform": async ({ sessionID }, output) => {
         if (!sessionID) return
+        if (!isAutoresearchSession(sessionID)) return
         const runtime = runtimeStore.get(sessionID)
         const session = await loadAutoresearchSession(input.directory, runtime?.workDir)
         const durabilityReport = formatAutoresearchDurabilityReport(session.durability)
@@ -95,6 +108,7 @@ const plugin: PluginModule = {
         )
       },
       "experimental.session.compacting": async ({ sessionID }, output) => {
+        if (!isAutoresearchSession(sessionID)) return
         const runtime = runtimeStore.get(sessionID)
         const session = await loadAutoresearchSession(input.directory, runtime?.workDir)
         if (!session.state.config) return
@@ -112,7 +126,13 @@ const plugin: PluginModule = {
           }),
         ].join("\n")
       },
-      "experimental.compaction.autocontinue": async ({ sessionID }, output) => {
+      "experimental.compaction.autocontinue": async ({ agent, sessionID }, output) => {
+        runtimeStore.setAgent(sessionID, agent)
+        if (!isAutoresearchAgent(agent)) {
+          output.enabled = false
+          return
+        }
+
         const runtime = runtimeStore.get(sessionID)
         output.enabled = runtime?.mode === "active" ? true : false
       },
@@ -124,4 +144,8 @@ export default plugin
 
 function getEventSessionID(event: { type: string; properties?: Record<string, unknown> }): string | undefined {
   return typeof event.properties?.sessionID === "string" ? event.properties.sessionID : undefined
+}
+
+function isAutoresearchSession(sessionID: string): boolean {
+  return isAutoresearchAgent(runtimeStore.get(sessionID)?.agent)
 }

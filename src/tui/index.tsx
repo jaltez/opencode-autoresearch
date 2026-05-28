@@ -2,25 +2,49 @@ import "@opentui/solid/runtime-plugin-support"
 import path from "node:path"
 import type { TuiPluginModule } from "@opencode-ai/plugin/tui"
 import { For, Show, createEffect, createSignal, onCleanup } from "solid-js"
+import { AUTORESEARCH_AGENT, isAutoresearchAgent } from "../server/commands"
 import { loadAutoresearchWorkspaceSnapshot } from "./data"
 import { buildAutoresearchTuiViewModel, type AutoresearchTuiViewModel } from "./view-model"
 
 const SIDEBAR_POLL_MS = 2_000
 const DASHBOARD_ROUTE = "autoresearch-dashboard"
 
+type TuiApi = Parameters<NonNullable<TuiPluginModule["tui"]>>[0]
+
+interface SessionAgentLookup {
+  get(sessionID: string | undefined): string | undefined
+  has(sessionID: string | undefined): boolean
+  refresh(sessionID: string | undefined): Promise<string | undefined>
+}
+
 const plugin: TuiPluginModule & { id: string } = {
   id: "opencode.autoresearch",
   tui: async (api) => {
+    const sessionAgents = createSessionAgentLookup(api)
     const unregisterRoutes = api.route.register([
       {
         name: DASHBOARD_ROUTE,
-        render: () => <AutoresearchDashboard projectDir={api.state.path.directory} />,
+        render: ({ params }) => (
+          <AutoresearchDashboard
+            api={api}
+            projectDir={api.state.path.directory}
+            sessionAgents={sessionAgents}
+            sessionID={typeof params?.sessionID === "string" ? params.sessionID : getCurrentSessionID(api)}
+          />
+        ),
       },
     ])
 
     const unregisterCommands = api.command?.register(() => {
-      const sessionID = getCurrentSessionID(api)
+      const sessionID = getRoutedSessionID(api)
+      const enabled = isAutoresearchSessionEnabled(api, sessionAgents, sessionID)
+      const commands = isDashboardRoute(api)
+        ? [createCloseDashboardItem(api)]
+        : []
+      if (!enabled) return commands
+
       return [
+        ...commands,
         createPaletteItem({
           action: "status",
           description: "Ask the current session for a deterministic autoresearch status summary.",
@@ -35,7 +59,7 @@ const plugin: TuiPluginModule & { id: string } = {
         }, api),
         createPaletteItem({
           description: "Open the OpenCode Autoresearch dashboard for the current workspace.",
-          enabled: Boolean(api.state.path.directory),
+          enabled: !isDashboardRoute(api) && Boolean(api.state.path.directory),
           onSelect: () => {
             api.route.navigate(DASHBOARD_ROUTE, sessionID ? { sessionID } : undefined)
           },
@@ -80,12 +104,20 @@ const plugin: TuiPluginModule & { id: string } = {
       slots: {
         session_prompt_right: (_ctx, props) => (
           <AutoresearchPromptStatus
+            api={api}
             projectDir={api.state.path.directory}
+            sessionAgents={sessionAgents}
             sessionID={props.session_id}
           />
         ),
-        sidebar_content: () => <AutoresearchSidebar projectDir={api.state.path.directory} />,
-        sidebar_footer: () => <AutoresearchSidebarFooter />,
+        sidebar_content: () => (
+          <AutoresearchSidebar
+            api={api}
+            projectDir={api.state.path.directory}
+            sessionAgents={sessionAgents}
+          />
+        ),
+        sidebar_footer: () => <AutoresearchSidebarFooter api={api} sessionAgents={sessionAgents} />,
       },
     })
 
@@ -165,24 +197,39 @@ function createPaletteItem(
   }
 }
 
-function AutoresearchPromptStatus(props: { projectDir: string; sessionID: string }) {
-  const model = useAutoresearchModel(() => props.projectDir)
+function AutoresearchPromptStatus(props: {
+  api: TuiApi
+  projectDir: string
+  sessionAgents: SessionAgentLookup
+  sessionID: string
+}) {
+  const enabled = useAutoresearchSessionEnabled(props.api, props.sessionAgents, () => props.sessionID)
+  const model = useAutoresearchModel(() => props.projectDir, enabled)
+
   return (
-    <box paddingLeft={1}>
-      <text fg={model()?.durabilityRecoveryRequired ? "#e28b6d" : modeColor(model()?.mode)}>
-        {model()?.promptLabel ?? `AR · ${path.basename(props.projectDir)}`}
-      </text>
-    </box>
+    <Show when={enabled() && model()}>
+      <box paddingLeft={1}>
+        <text fg={model()?.durabilityRecoveryRequired ? "#e28b6d" : modeColor(model()?.mode)}>
+          {model()?.promptLabel ?? `AR · ${path.basename(props.projectDir)}`}
+        </text>
+      </box>
+    </Show>
   )
 }
 
-function AutoresearchSidebar(props: { projectDir: string }) {
-  const model = useAutoresearchModel(() => props.projectDir)
+function AutoresearchSidebar(props: {
+  api: TuiApi
+  projectDir: string
+  sessionAgents: SessionAgentLookup
+}) {
+  const enabled = useAutoresearchSessionEnabled(props.api, props.sessionAgents, () => getCurrentSessionID(props.api))
+  const model = useAutoresearchModel(() => props.projectDir, enabled)
 
   return (
-    <scrollbox height="100%" width="100%" paddingRight={1}>
-      <box flexDirection="column" gap={1} paddingBottom={1}>
-        <Show when={model()} fallback={<SidebarEmptyState projectDir={props.projectDir} />}>
+    <Show when={enabled()}>
+      <scrollbox height="100%" width="100%" paddingRight={1}>
+        <box flexDirection="column" gap={1} paddingBottom={1}>
+          <Show when={model()} fallback={<SidebarEmptyState projectDir={props.projectDir} />}>
           <box border borderColor="#3d3d3d" flexDirection="column" gap={1} padding={1} title="Autoresearch">
             <text fg="#f3ede2">{model()?.name}</text>
             <Show when={model()?.objective}>
@@ -257,32 +304,45 @@ function AutoresearchSidebar(props: { projectDir: string }) {
               <text fg="#aab5c4" wrapMode="word">{model()?.recentHook}</text>
             </box>
           </Show>
-        </Show>
-      </box>
-    </scrollbox>
+          </Show>
+        </box>
+      </scrollbox>
+    </Show>
   )
 }
 
-function AutoresearchSidebarFooter() {
+function AutoresearchSidebarFooter(props: { api: TuiApi; sessionAgents: SessionAgentLookup }) {
+  const enabled = useAutoresearchSessionEnabled(props.api, props.sessionAgents, () => getCurrentSessionID(props.api))
+
   return (
-    <box paddingTop={1}>
-      <text fg="#8a8f98">Palette: Open Dashboard · Status · Finalize Plan</text>
-    </box>
+    <Show when={enabled()}>
+      <box paddingTop={1}>
+        <text fg="#8a8f98">Palette: Open Dashboard · Status · Finalize Plan</text>
+      </box>
+    </Show>
   )
 }
 
-function AutoresearchDashboard(props: { projectDir: string }) {
-  const model = useAutoresearchModel(() => props.projectDir)
+function AutoresearchDashboard(props: {
+  api: TuiApi
+  projectDir: string
+  sessionAgents: SessionAgentLookup
+  sessionID?: string
+}) {
+  const enabled = useAutoresearchSessionEnabled(props.api, props.sessionAgents, () => props.sessionID)
+  const model = useAutoresearchModel(() => props.projectDir, enabled)
 
   return (
     <scrollbox height="100%" width="100%">
       <box flexDirection="column" gap={1} padding={1}>
-        <Show when={model()} fallback={<SidebarEmptyState projectDir={props.projectDir} />}>
+        <Show when={enabled()} fallback={<AutoresearchModeUnavailable />}>
+          <Show when={model()} fallback={<SidebarEmptyState projectDir={props.projectDir} />}>
           <box border borderColor="#c78c3a" flexDirection="column" gap={1} padding={1} title="Autoresearch Dashboard">
             <text fg="#f3ede2">{model()?.promptLabel}</text>
             <Show when={model()?.objective}>
               <text fg="#d5c8a2" wrapMode="word">{model()?.objective}</text>
             </Show>
+            <text fg="#8a8f98">Palette: Close Dashboard</text>
           </box>
 
           <Show when={model()}>
@@ -300,9 +360,20 @@ function AutoresearchDashboard(props: { projectDir: string }) {
           <box border borderColor="#3d3d3d" flexDirection="column" gap={1} padding={1} title="Finalize Preview">
             <text fg="#d6dde6" wrapMode="word">{model()?.finalizeText ?? ""}</text>
           </box>
+          </Show>
         </Show>
       </box>
     </scrollbox>
+  )
+}
+
+function AutoresearchModeUnavailable() {
+  return (
+    <box border borderColor="#3d3d3d" flexDirection="column" gap={1} padding={1} title="Autoresearch">
+      <text fg="#f3ede2">Autoresearch UI is only available when the active session agent is {AUTORESEARCH_AGENT}.</text>
+      <text fg="#aab5c4" wrapMode="word">Switch the current session to the autoresearch agent to view the dashboard and sidebar controls.</text>
+      <text fg="#8a8f98" wrapMode="word">Use the command palette and run Autoresearch: Close Dashboard to return.</text>
+    </box>
   )
 }
 
@@ -387,11 +458,17 @@ function AutoresearchSignalRun(props: {
   )
 }
 
-function useAutoresearchModel(projectDir: () => string) {
+function useAutoresearchModel(projectDir: () => string, enabled: () => boolean = () => true) {
   const [model, setModel] = createSignal<ReturnType<typeof buildAutoresearchTuiViewModel>>()
   let preferredWorkDir: string | undefined
 
   async function refresh() {
+    if (!enabled()) {
+      preferredWorkDir = undefined
+      setModel(undefined)
+      return
+    }
+
     const snapshot = await loadAutoresearchWorkspaceSnapshot(projectDir(), preferredWorkDir)
     preferredWorkDir = snapshot?.paths.directory
     setModel(snapshot ? buildAutoresearchTuiViewModel(snapshot) : undefined)
@@ -399,6 +476,7 @@ function useAutoresearchModel(projectDir: () => string) {
 
   createEffect(() => {
     void projectDir()
+    void enabled()
     void refresh()
   })
 
@@ -430,4 +508,141 @@ function getCurrentSessionID(api: Parameters<NonNullable<TuiPluginModule["tui"]>
   const current = api.route.current
   if (current.name !== "session") return undefined
   return typeof current.params?.sessionID === "string" ? current.params.sessionID : undefined
+}
+
+function getDashboardSessionID(api: TuiApi): string | undefined {
+  const current = api.route.current
+  if (current.name !== DASHBOARD_ROUTE) return undefined
+  return typeof current.params?.sessionID === "string" ? current.params.sessionID : undefined
+}
+
+function getRoutedSessionID(api: TuiApi): string | undefined {
+  return getCurrentSessionID(api) ?? getDashboardSessionID(api)
+}
+
+function isDashboardRoute(api: TuiApi): boolean {
+  return api.route.current.name === DASHBOARD_ROUTE
+}
+
+function createCloseDashboardItem(api: TuiApi) {
+  return {
+    category: "Autoresearch",
+    description: "Return from the autoresearch dashboard to the prior session or home view.",
+    enabled: true,
+    hidden: false,
+    onSelect: () => {
+      const sessionID = getDashboardSessionID(api)
+      if (sessionID) {
+        api.route.navigate("session", { sessionID })
+        return
+      }
+
+      api.route.navigate("home")
+    },
+    title: "Autoresearch: Close Dashboard",
+    value: "autoresearch.dashboard.close",
+  }
+}
+
+function createSessionAgentLookup(api: TuiApi): SessionAgentLookup {
+  const agents = new Map<string, string | undefined>()
+  const inFlight = new Map<string, Promise<string | undefined>>()
+
+  const unregister = api.event.on("session.next.agent.switched", (event) => {
+    agents.set(event.properties.sessionID, event.properties.agent)
+  })
+  api.lifecycle.onDispose(unregister)
+
+  return {
+    get(sessionID) {
+      return sessionID ? agents.get(sessionID) : undefined
+    },
+    has(sessionID) {
+      return Boolean(sessionID && agents.has(sessionID))
+    },
+    async refresh(sessionID) {
+      if (!sessionID) return undefined
+
+      const pending = inFlight.get(sessionID)
+      if (pending) return await pending
+
+      const request = (async () => {
+        const result = await api.client.session.get({
+          directory: api.state.path.directory,
+          sessionID,
+        })
+        const agent = result.data?.agent
+        if (agent) {
+          agents.set(sessionID, agent)
+        }
+        return agent
+      })().catch(() => agents.get(sessionID)).finally(() => {
+        inFlight.delete(sessionID)
+      })
+
+      inFlight.set(sessionID, request)
+      return await request
+    },
+  }
+}
+
+function useAutoresearchSessionEnabled(
+  api: TuiApi,
+  sessionAgents: SessionAgentLookup,
+  sessionID: () => string | undefined,
+) {
+  const [enabled, setEnabled] = createSignal(isAutoresearchSessionEnabled(api, sessionAgents, sessionID()))
+  let refreshVersion = 0
+
+  async function refresh() {
+    const currentSessionID = sessionID()
+    setEnabled(isAutoresearchSessionEnabled(api, sessionAgents, currentSessionID))
+    if (!currentSessionID) return
+
+    const version = ++refreshVersion
+    const agent = await sessionAgents.refresh(currentSessionID)
+    if (version !== refreshVersion || currentSessionID !== sessionID()) return
+    setEnabled(isAutoresearchAgent(agent))
+  }
+
+  createEffect(() => {
+    void sessionID()
+    void refresh()
+  })
+
+  const unregister = api.event.on("session.next.agent.switched", (event) => {
+    if (event.properties.sessionID !== sessionID()) return
+    setEnabled(isAutoresearchAgent(event.properties.agent))
+  })
+
+  onCleanup(unregister)
+
+  return enabled
+}
+
+function isAutoresearchSessionEnabled(
+  api: TuiApi,
+  sessionAgents: SessionAgentLookup,
+  sessionID: string | undefined,
+): boolean {
+  if (!sessionID) return false
+
+  const agent = getKnownSessionAgent(api, sessionAgents, sessionID)
+  if (!sessionAgents.has(sessionID)) {
+    void sessionAgents.refresh(sessionID)
+  }
+
+  return isAutoresearchAgent(agent)
+}
+
+function getKnownSessionAgent(
+  api: TuiApi,
+  sessionAgents: SessionAgentLookup,
+  sessionID: string,
+): string | undefined {
+  if (sessionAgents.has(sessionID)) {
+    return sessionAgents.get(sessionID)
+  }
+
+  return api.state.session.messages(sessionID).at(-1)?.agent
 }

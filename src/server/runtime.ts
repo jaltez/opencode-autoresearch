@@ -1,6 +1,7 @@
 import type { AutoresearchMode } from "../core/types"
 
 export interface SessionRuntime {
+  agent?: string
   autoResumePending: boolean
   followUpQueued: boolean
   lastActivityAt: number
@@ -16,6 +17,7 @@ export class AutoresearchRuntimeStore {
 
   activate(sessionId: string, workDir?: string): SessionRuntime {
     const next: SessionRuntime = {
+      agent: this.#state.get(sessionId)?.agent,
       autoResumePending: false,
       followUpQueued: false,
       lastActivityAt: Date.now(),
@@ -42,6 +44,26 @@ export class AutoresearchRuntimeStore {
     return [...this.#state.values()]
   }
 
+  setAgent(sessionId: string, agent: string | undefined): SessionRuntime | undefined {
+    if (!agent) return this.#state.get(sessionId)
+
+    const current = this.#state.get(sessionId)
+    const next: SessionRuntime = {
+      agent,
+      autoResumePending: current?.autoResumePending ?? false,
+      followUpQueued: current?.followUpQueued ?? false,
+      lastActivityAt: Date.now(),
+      lastAutomatedAt: current?.lastAutomatedAt,
+      mode: current?.mode ?? "off",
+      pendingReason: current?.pendingReason,
+      sessionId,
+      workDir: current?.workDir,
+    }
+
+    this.#state.set(sessionId, next)
+    return next
+  }
+
   markFollowUpQueued(sessionId: string, queued: boolean): SessionRuntime | undefined {
     const current = this.#state.get(sessionId)
     if (!current) return undefined
@@ -54,6 +76,7 @@ export class AutoresearchRuntimeStore {
   markAutomated(sessionId: string, workDir?: string): SessionRuntime {
     const current = this.#state.get(sessionId)
     const next: SessionRuntime = {
+      agent: current?.agent,
       autoResumePending: current?.autoResumePending ?? false,
       followUpQueued: false,
       lastActivityAt: Date.now(),
@@ -71,6 +94,7 @@ export class AutoresearchRuntimeStore {
   queueAutoResume(sessionId: string, reason?: string): SessionRuntime {
     const current = this.#state.get(sessionId)
     const next: SessionRuntime = {
+      agent: current?.agent,
       autoResumePending: true,
       followUpQueued: false,
       lastActivityAt: Date.now(),
@@ -118,6 +142,7 @@ export class AutoresearchRuntimeStore {
   setMode(sessionId: string, mode: AutoresearchMode): SessionRuntime {
     const current = this.#state.get(sessionId)
     const next: SessionRuntime = {
+      agent: current?.agent,
       autoResumePending: mode === "active" ? current?.autoResumePending ?? false : false,
       followUpQueued: current?.followUpQueued ?? false,
       lastActivityAt: Date.now(),
@@ -144,6 +169,7 @@ export class AutoresearchRuntimeStore {
   touch(sessionId: string): SessionRuntime {
     const current = this.#state.get(sessionId)
     const next: SessionRuntime = {
+      agent: current?.agent,
       autoResumePending: current?.autoResumePending ?? false,
       followUpQueued: current?.followUpQueued ?? false,
       lastActivityAt: Date.now(),

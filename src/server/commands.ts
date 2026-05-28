@@ -19,7 +19,11 @@ export interface MutablePluginConfig {
   default_agent?: string
 }
 
-const AUTORESEARCH_AGENT = "autoresearch"
+export const AUTORESEARCH_AGENT = "autoresearch"
+
+export function isAutoresearchAgent(agent: string | undefined): boolean {
+  return agent === AUTORESEARCH_AGENT
+}
 
 export function createAutoresearchAgent(): MutableAgentConfig {
   return {

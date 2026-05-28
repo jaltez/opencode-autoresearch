@@ -7,8 +7,8 @@ This project is inspired by `pi-autoresearch`, but it is implemented as an OpenC
 ## Status
 
 - Runtime: Bun and TypeScript.
-- Server export: `@jaltez/opencode-autoresearch/server`.
-- TUI export: `@jaltez/opencode-autoresearch/tui`.
+- NPM plugin package: `@jaltez/opencode-autoresearch`.
+- Internal subpath exports: `@jaltez/opencode-autoresearch/server` and `@jaltez/opencode-autoresearch/tui`.
 - Session source of truth: `autoresearch.jsonl` plus generated `autoresearch.state.json`.
 - Current validation command: `bun run check`.
 
@@ -22,18 +22,56 @@ bun run check
 
 The package exports built files from `dist`, so run `bun run build` before packing or loading the package from a built artifact. `prepack` also runs the build automatically.
 
+## Install In OpenCode
+
+Install into the current project:
+
+```sh
+cd /path/to/project
+opencode plugin @jaltez/opencode-autoresearch
+```
+
+Install globally:
+
+```sh
+opencode plugin -g @jaltez/opencode-autoresearch
+```
+
+OpenCode writes the plugin spec into the matching config scope:
+
+- Project install updates `.opencode/opencode.json` and `.opencode/tui.json`.
+- Global install updates `~/.config/opencode/opencode.jsonc` and `~/.config/opencode/tui.json`.
+
+If you are installing a very fresh publish and Bun is enforcing a package age policy, prefix the install command with `npm_config_min_release_age=0`:
+
+```sh
+npm_config_min_release_age=0 opencode plugin @jaltez/opencode-autoresearch
+npm_config_min_release_age=0 opencode plugin -g @jaltez/opencode-autoresearch
+```
+
 ## OpenCode Entry Points
 
-Configure OpenCode to load both plugin entry points when you want the server tools plus the dashboard UI:
+Configure OpenCode to load the published package when you want the server tools plus the dashboard UI:
 
 ```json
 {
   "plugin": [
-    "@jaltez/opencode-autoresearch/server",
-    "@jaltez/opencode-autoresearch/tui"
+    "@jaltez/opencode-autoresearch"
   ]
 }
 ```
+
+For local development from a checkout, point OpenCode at the package directory instead:
+
+```json
+{
+  "plugin": [
+    "file:."
+  ]
+}
+```
+
+OpenCode installs npm plugins by package name. Npm subpath entries such as `@jaltez/opencode-autoresearch/server` and `@jaltez/opencode-autoresearch/tui` are package exports, but they are not valid values in `opencode.json`.
 
 The server plugin injects an `autoresearch` agent and these commands:
 
