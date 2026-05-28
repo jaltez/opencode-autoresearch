@@ -34,7 +34,7 @@ const plugin: TuiPluginModule & { id: string } = {
           title: "Autoresearch: Backup Session",
         }, api),
         createPaletteItem({
-          description: "Open the opencode-native autoresearch dashboard for the current workspace.",
+          description: "Open the OpenCode Autoresearch dashboard for the current workspace.",
           enabled: Boolean(api.state.path.directory),
           onSelect: () => {
             api.route.navigate(DASHBOARD_ROUTE, sessionID ? { sessionID } : undefined)

@@ -1,8 +1,8 @@
-# opencode-autoresearch
+# OpenCode Autoresearch
 
-Autoresearch is an opencode plugin for running benchmark-driven experiment loops. It gives an agent a structured way to create a session, run the canonical benchmark, parse `METRIC` output, keep or discard changes, preserve experiment memory, and split kept work into review branches.
+OpenCode Autoresearch is an OpenCode plugin for running benchmark-driven experiment loops. It gives an agent a structured way to create a session, run the canonical benchmark, parse `METRIC` output, keep or discard changes, preserve experiment memory, and split kept work into review branches.
 
-This project is inspired by `pi-autoresearch`, but it is implemented as an opencode server and TUI plugin. The compatibility target is user-visible behavior and invariants rather than the original internal storage format.
+This project is inspired by `pi-autoresearch`, but it is implemented as an OpenCode server and TUI plugin. The compatibility target is user-visible behavior and invariants rather than the original internal storage format.
 
 ## Status
 
@@ -22,9 +22,9 @@ bun run check
 
 The package exports built files from `dist`, so run `bun run build` before packing or loading the package from a built artifact. `prepack` also runs the build automatically.
 
-## opencode Entry Points
+## OpenCode Entry Points
 
-Configure opencode to load both plugin entry points when you want the server tools plus the dashboard UI:
+Configure OpenCode to load both plugin entry points when you want the server tools plus the dashboard UI:
 
 ```json
 {
@@ -124,3 +124,7 @@ bun run check
 ```
 
 Keep changes focused and add tests around any behavior that affects session durability, git operations, hook execution, metrics parsing, or auto-resume semantics.
+
+## License
+
+MIT License. See [LICENSE](LICENSE).

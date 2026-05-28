@@ -1,9 +1,11 @@
 {
   "name": "opencode-autoresearch",
+  "displayName": "OpenCode Autoresearch",
   "version": "0.1.0",
-  "description": "Autoresearch loop, benchmark, dashboard, and finalize plugin for opencode.",
+  "description": "OpenCode Autoresearch loop, benchmark, dashboard, and finalize plugin.",
   "private": false,
-  "license": "UNLICENSED",
+  "license": "MIT",
+  "author": "Javier Altez",
   "type": "module",
   "keywords": [
     "opencode",
@@ -14,6 +16,7 @@
   ],
   "files": [
     "dist",
+    "LICENSE",
     "README.md",
     "package.json"
   ],
