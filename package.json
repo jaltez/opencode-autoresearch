@@ -1,7 +1,7 @@
 {
   "name": "@jaltez/opencode-autoresearch",
   "displayName": "OpenCode Autoresearch",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "OpenCode Autoresearch loop, benchmark, dashboard, and finalize plugin.",
   "private": false,
   "license": "MIT",
