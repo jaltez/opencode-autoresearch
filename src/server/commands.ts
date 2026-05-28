@@ -1,5 +1,5 @@
 export interface MutableAgentConfig {
-  description: string
+  description?: string
   mode?: "all" | "primary" | "subagent"
   prompt?: string
   tools?: Record<string, boolean>
@@ -20,6 +20,10 @@ export interface MutablePluginConfig {
 }
 
 export const AUTORESEARCH_AGENT = "autoresearch"
+const BUILTIN_PRIMARY_AGENTS = ["build", "plan"] as const
+const PRIMARY_AGENT_ORDER_SHIM: Pick<MutableAgentConfig, "mode"> = {
+  mode: "primary",
+}
 
 export function isAutoresearchAgent(agent: string | undefined): boolean {
   return agent === AUTORESEARCH_AGENT
@@ -99,11 +103,17 @@ export function createAutoresearchCommands(): Record<string, MutableCommandConfi
 }
 
 export function injectAutoresearchConfig(cfg: MutablePluginConfig): void {
-  cfg.agent = cfg.agent ?? {}
+  const existingAgents = cfg.agent ?? {}
   cfg.command = cfg.command ?? {}
 
-  if (!cfg.agent[AUTORESEARCH_AGENT]) {
-    cfg.agent[AUTORESEARCH_AGENT] = createAutoresearchAgent()
+  cfg.agent = {
+    ...Object.fromEntries(
+      BUILTIN_PRIMARY_AGENTS.map((name) => [name, existingAgents[name] ?? PRIMARY_AGENT_ORDER_SHIM]),
+    ),
+    [AUTORESEARCH_AGENT]: existingAgents[AUTORESEARCH_AGENT] ?? createAutoresearchAgent(),
+    ...Object.fromEntries(
+      Object.entries(existingAgents).filter(([name]) => !isReservedPrimaryAgent(name)),
+    ),
   }
 
   for (const [name, command] of Object.entries(createAutoresearchCommands())) {
@@ -111,4 +121,8 @@ export function injectAutoresearchConfig(cfg: MutablePluginConfig): void {
       cfg.command[name] = command
     }
   }
+}
+
+function isReservedPrimaryAgent(name: string): boolean {
+  return name === AUTORESEARCH_AGENT || BUILTIN_PRIMARY_AGENTS.includes(name as (typeof BUILTIN_PRIMARY_AGENTS)[number])
 }

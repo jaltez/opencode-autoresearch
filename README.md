@@ -49,6 +49,17 @@ npm_config_min_release_age=0 opencode plugin @jaltez/opencode-autoresearch
 npm_config_min_release_age=0 opencode plugin -g @jaltez/opencode-autoresearch
 ```
 
+## Remove From OpenCode
+
+OpenCode does not currently expose a dedicated plugin uninstall command. Remove the plugin spec from the same config files that were updated during install:
+
+- Project install: remove `@jaltez/opencode-autoresearch` from `.opencode/opencode.json` and `.opencode/tui.json`.
+- Global install: remove `@jaltez/opencode-autoresearch` from `~/.config/opencode/opencode.jsonc` and `~/.config/opencode/tui.json`.
+
+If you loaded the plugin from local files instead of npm, delete the corresponding file from `.opencode/plugins/` or `~/.config/opencode/plugins/`.
+
+After removing the config entry or local plugin file, restart OpenCode so it reloads the plugin list.
+
 ## OpenCode Entry Points
 
 Configure OpenCode to load the published package when you want the server tools plus the dashboard UI:
