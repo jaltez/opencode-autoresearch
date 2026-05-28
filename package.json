@@ -1,5 +1,5 @@
 {
-  "name": "opencode-autoresearch",
+  "name": "@jaltez/opencode-autoresearch",
   "displayName": "OpenCode Autoresearch",
   "version": "0.1.0",
   "description": "OpenCode Autoresearch loop, benchmark, dashboard, and finalize plugin.",

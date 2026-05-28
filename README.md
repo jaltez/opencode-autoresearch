@@ -7,8 +7,8 @@ This project is inspired by `pi-autoresearch`, but it is implemented as an OpenC
 ## Status
 
 - Runtime: Bun and TypeScript.
-- Server export: `opencode-autoresearch/server`.
-- TUI export: `opencode-autoresearch/tui`.
+- Server export: `@jaltez/opencode-autoresearch/server`.
+- TUI export: `@jaltez/opencode-autoresearch/tui`.
 - Session source of truth: `autoresearch.jsonl` plus generated `autoresearch.state.json`.
 - Current validation command: `bun run check`.
 
@@ -29,8 +29,8 @@ Configure OpenCode to load both plugin entry points when you want the server too
 ```json
 {
   "plugin": [
-    "opencode-autoresearch/server",
-    "opencode-autoresearch/tui"
+    "@jaltez/opencode-autoresearch/server",
+    "@jaltez/opencode-autoresearch/tui"
   ]
 }
 ```
