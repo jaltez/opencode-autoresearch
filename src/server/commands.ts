@@ -1,7 +1,9 @@
 export interface MutableAgentConfig {
   description?: string
   mode?: "all" | "primary" | "subagent"
+  permission?: Record<string, "allow" | "ask" | "deny">
   prompt?: string
+  /** @deprecated Use `permission`; kept only for compatibility. */
   tools?: Record<string, boolean>
 }
 
@@ -33,6 +35,17 @@ export function createAutoresearchAgent(): MutableAgentConfig {
   return {
     description: "Runs the autoresearch loop and manages experiment sessions.",
     mode: "primary",
+    permission: {
+      bash: "allow",
+      edit: "allow",
+      glob: "allow",
+      grep: "allow",
+      lsp: "allow",
+      read: "allow",
+      skill: "allow",
+      webfetch: "allow",
+      write: "allow",
+    },
     prompt: [
       "You are the autoresearch agent.",
       "Drive one experiment iteration at a time, keep state explicit, and avoid speculative tool use.",
@@ -43,15 +56,6 @@ export function createAutoresearchAgent(): MutableAgentConfig {
       "Use log_experiment to persist durable ASI for every meaningful run, especially discarded, retried, or crashed experiments.",
       "Before keeping a run, make sure the winning change is present in the intended implementation, validated at the default target configuration, and logged with log_experiment.",
     ].join("\n"),
-    tools: {
-      bash: true,
-      edit: true,
-      glob: true,
-      grep: true,
-      lsp: true,
-      read: true,
-      write: true,
-    },
   }
 }
 

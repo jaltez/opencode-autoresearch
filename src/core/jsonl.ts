@@ -88,6 +88,8 @@ export function reconstructJsonlState(content: string): AutoresearchState {
         state.config = entry.config
         state.currentSegment = entry.segment ?? nextSegment(state.currentSegment)
         state.mode = entry.mode ?? state.mode
+        // Each session entry starts a fresh secondary-metric schema.
+        state.secondaryMetrics = {}
         break
       case "mode":
         state.mode = entry.mode

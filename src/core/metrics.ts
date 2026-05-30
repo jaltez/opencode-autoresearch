@@ -94,6 +94,17 @@ export function findPrimaryMetric(metrics: readonly MetricValue[], primaryMetric
   return metrics.find((metric) => metric.name.toLowerCase() === normalized) ?? metrics[0]
 }
 
+/**
+ * True when the configured primary metric is missing from `metrics` and we
+ * silently fell back to the first available metric. Surfaces a soft signal
+ * the caller can use to warn the agent or annotate dashboards.
+ */
+export function isPrimaryMetricFallback(metrics: readonly MetricValue[], primaryMetricName: string | undefined): boolean {
+  if (!primaryMetricName || metrics.length === 0) return false
+  const normalized = primaryMetricName.toLowerCase()
+  return !metrics.some((metric) => metric.name === primaryMetricName || metric.name.toLowerCase() === normalized)
+}
+
 export function isBetterMetricValue(candidate: MetricValue, incumbent: MetricValue): boolean {
   const higherIsBetter = candidate.higherIsBetter ?? incumbent.higherIsBetter ?? inferHigherIsBetter(candidate.name)
   return higherIsBetter ? candidate.value > incumbent.value : candidate.value < incumbent.value

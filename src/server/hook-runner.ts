@@ -1,17 +1,19 @@
-import path from "node:path"
 import { spawn } from "node:child_process"
 import { constants } from "node:fs"
 import { access, stat } from "node:fs/promises"
 import { currentSegment, findBaselineRun, findBestKeptRun } from "../core/jsonl"
 import { findPrimaryMetric } from "../core/metrics"
 import { autoresearchHookCandidates, resolveAutoresearchPaths } from "../core/paths"
-import { buildHookStdin, createHookInvocation, DEFAULT_HOOK_TIMEOUT_MS } from "../core/hooks"
+import { buildHookStdin, createHookInvocation, DEFAULT_HOOK_TIMEOUT_MS, type HookSessionSnapshot } from "../core/hooks"
 import type { AutoresearchState, ExperimentRun, HookInvocation } from "../core/types"
+import { formatScriptCommand, streamToText } from "./shell"
 
 export async function executeAutoresearchHook(input: {
   abort: AbortSignal
   directory: string
   kind: HookInvocation["kind"]
+  lastRun?: ExperimentRun
+  nextRun?: Partial<ExperimentRun>
   projectDir: string
   run?: ExperimentRun
   sessionId: string
@@ -21,13 +23,18 @@ export async function executeAutoresearchHook(input: {
   const scriptPath = await findExistingHookScript(input.directory, input.kind)
   if (!scriptPath) return undefined
 
+  const lastRun = input.lastRun ?? input.run ?? input.state.runs.at(-1)
+  const startedAtIso = new Date().toISOString()
+  const startedAtMs = performance.now()
   const result = await runHookCommand(input.directory, formatScriptCommand(input.directory, scriptPath), input.abort, {
     stdin: buildHookStdin({
       config: input.state.config,
       cwd: input.directory,
       event: input.kind,
+      last_run: lastRun,
+      next_run: input.nextRun,
       projectDir: input.projectDir,
-      run: input.run,
+      run: input.lastRun ?? input.run,
       session: buildSessionSnapshot(input.state),
       sessionId: input.sessionId,
       stateSummary: input.stateSummary,
@@ -37,22 +44,31 @@ export async function executeAutoresearchHook(input: {
   })
 
   return createHookInvocation({
-    at: new Date().toISOString(),
+    at: startedAtIso,
+    durationMs: Math.max(0, Math.round(performance.now() - startedAtMs)),
     exitCode: result.exitCode,
     kind: input.kind,
     scriptPath,
     status: result.timedOut ? "timed_out" : result.exitCode === 0 ? "ok" : "failed",
     stderr: result.stderr,
     stdout: result.output,
+    stdoutBytes: new TextEncoder().encode(result.output).byteLength,
+    timedOut: result.timedOut,
   })
 }
 
-function buildSessionSnapshot(state: AutoresearchState) {
+function buildSessionSnapshot(state: AutoresearchState): HookSessionSnapshot {
   const segment = currentSegment(state)
   const baselineRun = findBaselineRun(state, segment)
   const bestRun = findBestKeptRun(state, segment)
   const baselineMetric = baselineRun ? findPrimaryMetric(baselineRun.metrics, state.config?.primaryMetric) : undefined
   const bestMetric = bestRun ? findPrimaryMetric(bestRun.metrics, state.config?.primaryMetric) : undefined
+  const direction = state.config?.metricDirection
+    ?? (baselineMetric?.higherIsBetter === undefined
+      ? undefined
+      : baselineMetric.higherIsBetter
+        ? "higher"
+        : "lower")
 
   return {
     baselineMetric,
@@ -65,6 +81,14 @@ function buildSessionSnapshot(state: AutoresearchState) {
     name: state.config?.name,
     primaryMetric: state.config?.primaryMetric,
     runCount: state.runs.length,
+    // Legacy compatibility aliases
+    baseline_metric: baselineMetric?.value,
+    best_metric: bestMetric?.value,
+    direction,
+    goal: state.config?.objective,
+    metric_name: state.config?.primaryMetric,
+    metric_unit: state.config?.metricUnit ?? baselineMetric?.unit,
+    run_count: state.runs.length,
   }
 }
 
@@ -129,25 +153,4 @@ async function runHookCommand(
     abort.removeEventListener("abort", onAbort)
     clearTimeout(timeout)
   }
-}
-
-function formatScriptCommand(cwd: string, scriptPath: string): string {
-  const relative = path.relative(cwd, scriptPath) || path.basename(scriptPath)
-  if (relative.startsWith("./") || relative.startsWith("../")) return shellQuote(relative)
-  return shellQuote(`./${relative}`)
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll(`'`, `'"'"'`)}'`
-}
-
-async function streamToText(stream: NodeJS.ReadableStream | null): Promise<string> {
-  if (!stream) return ""
-
-  let result = ""
-  stream.setEncoding("utf8")
-  for await (const chunk of stream) {
-    result += chunk
-  }
-  return result
 }

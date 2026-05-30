@@ -59,8 +59,8 @@ describe("server tools integration", () => {
       "#!/usr/bin/env bash",
       "set -euo pipefail",
       "payload=$(cat)",
-      "[[ \"$payload\" == *'\"event\": \"after\"'* ]] || { echo 'missing after event' >&2; exit 1; }",
-      "[[ \"$payload\" == *'\"decision\": \"keep\"'* ]] || { echo 'missing keep decision' >&2; exit 1; }",
+      "[[ \"$payload\" == *'\"event\":\"after\"'* ]] || { echo 'missing after event' >&2; exit 1; }",
+      "[[ \"$payload\" == *'\"decision\":\"keep\"'* ]] || { echo 'missing keep decision' >&2; exit 1; }",
       "[[ \"$payload\" == *'\"commit\":'* ]] || { echo 'missing commit' >&2; exit 1; }",
       "echo '{\"message\":\"after saw keep\"}'",
     ].join("\n"), "utf8")
@@ -387,7 +387,7 @@ describe("server tools integration", () => {
     expect(sessionAfterRun.state.runs[0]?.status).toBe("checks_failed")
 
     const keepAttempt = await logExperimentTool.execute({ decision: "keep" }, context)
-    expect(keepAttempt).toBe("Cannot keep a run whose checks failed.")
+    expect(keepAttempt).toBe("Cannot keep a run whose checks failed. Re-run with force=true to override.")
 
     await logExperimentTool.execute({ decision: "discard" }, context)
     const sessionAfterDiscard = await loadAutoresearchSession(workspace)

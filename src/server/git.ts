@@ -96,6 +96,22 @@ export async function discardRunChanges(cwd: string, run: ExperimentRun, preserv
     }
   }
 
+  // Fall back to a whole-tree reset when the run has no recorded change set.
+  if (trackedPaths.length === 0 && untrackedPaths.length === 0 && !run.changes) {
+    const restoreAll = await runCommand(
+      cwd,
+      "git checkout -- . ':(exclude,glob)**/autoresearch.*'",
+    )
+    if (restoreAll.output.trim()) outputs.push(restoreAll.output.trim())
+    if (restoreAll.stderr.trim()) outputs.push(restoreAll.stderr.trim())
+    const cleanAll = await runCommand(
+      cwd,
+      "git clean -fd -- . ':(exclude,glob)**/autoresearch.*'",
+    )
+    if (cleanAll.output.trim()) outputs.push(cleanAll.output.trim())
+    if (cleanAll.stderr.trim()) outputs.push(cleanAll.stderr.trim())
+  }
+
   if (outputs.length === 0) return "Discarded recorded run changes."
   return outputs.join("\n")
 }

@@ -3,14 +3,16 @@ import { spawn } from "node:child_process"
 import { tool } from "@opencode-ai/plugin"
 import { Effect } from "effect"
 import { evaluateMetricCheckExpression, parseMetricCheckExpression } from "../../core/checks"
-import { parseMetricLines } from "../../core/metrics"
+import { parseMetricLines, isPrimaryMetricFallback } from "../../core/metrics"
 import { AUTORESEARCH_CANONICAL_COMMAND, isAutoresearchScriptCommand } from "../../core/session-config"
-import type { ExperimentCheckResult, ExperimentRun, MetricValue, RunStatus } from "../../core/types"
+import type { ExperimentCheckResult, ExperimentConfig, ExperimentRun, MetricValue, RunStatus } from "../../core/types"
 import { formatAutoresearchRecoveryMessage } from "../durability"
 import { preservedArtifactPaths, captureGitChanges } from "../git"
 import { executeAutoresearchHook } from "../hook-runner"
+import { formatScriptCommand, streamToText } from "../shell"
 import { appendJsonlEntry, loadAutoresearchSession, writeStateSnapshot } from "../storage"
 import { runtimeStore } from "../runtime"
+import { applyConfigMetricOverrides, buildLogExperimentSuggestion } from "./experiment-helpers"
 
 const DEFAULT_EXPERIMENT_TIMEOUT_MS = 600_000
 const DEFAULT_CHECKS_TIMEOUT_MS = 300_000
@@ -80,7 +82,7 @@ export function createRunExperimentTool() {
       const commandResult = await runShellCommand(session.paths.directory, command, context.abort, {
         timeoutMs: experimentTimeoutMs,
       })
-      const metrics = parseMetricLines(commandResult.output)
+      const metrics = applyConfigMetricOverrides(parseMetricLines(commandResult.output), config)
       const checks = commandResult.exitCode === 0
         ? await runChecks(session.paths.directory, session.paths.checks, config.checks ?? [], metrics, context.abort, checksTimeoutMs)
         : []
@@ -129,7 +131,7 @@ export function createRunExperimentTool() {
           exitCode: commandResult.exitCode,
           iteration,
           metrics,
-          runID: run.id,
+          runId: run.id,
           status,
         },
         output: [
@@ -137,11 +139,15 @@ export function createRunExperimentTool() {
           metrics.length > 0
             ? `Metrics: ${metrics.map((metric) => `${metric.name}=${metric.value}${metric.unit ?? ""}`).join(", ")}`
             : "Metrics: none",
+          isPrimaryMetricFallback(metrics, config.primaryMetric)
+            ? `Warning: configured primary metric \"${config.primaryMetric}\" was not emitted by this run; falling back to \"${metrics[0]?.name}\".`
+            : "",
           checks.length > 0
             ? `Checks: ${checks.map((item) => `${item.command}=${item.passed ? "pass" : "fail"}`).join(", ")}`
             : "Checks: none",
           `Workdir: ${path.relative(context.directory, session.paths.directory) || "."}`,
-        ].join("\n"),
+          buildLogExperimentSuggestion(run, config.primaryMetric),
+        ].filter(Boolean).join("\n"),
       }
     },
   })
@@ -203,6 +209,8 @@ async function executeHookIfPresent(input: {
     abort: input.context.abort,
     directory: input.directory,
     kind: input.kind,
+    lastRun: input.state.runs.at(-1),
+    nextRun: { iteration: input.state.runs.length + 1 },
     projectDir: input.context.directory,
     run: input.run,
     sessionId: input.context.sessionID,
@@ -286,28 +294,7 @@ function secondsToMilliseconds(value: number | undefined, fallbackMs: number): n
   return Math.max(1, Math.ceil(value * 1000))
 }
 
-function formatScriptCommand(cwd: string, scriptPath: string): string {
-  const relative = path.relative(cwd, scriptPath) || path.basename(scriptPath)
-  if (relative.startsWith("./") || relative.startsWith("../")) return shellQuote(relative)
-  return shellQuote(`./${relative}`)
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll(`'`, `'"'"'`)}'`
-}
-
 function truncateOutput(text: string, maxChars = 12_000): string {
   if (text.length <= maxChars) return text
   return `${text.slice(0, maxChars)}\n...[truncated]`
-}
-
-async function streamToText(stream: NodeJS.ReadableStream | null): Promise<string> {
-  if (!stream) return ""
-
-  let result = ""
-  stream.setEncoding("utf8")
-  for await (const chunk of stream) {
-    result += chunk
-  }
-  return result
 }

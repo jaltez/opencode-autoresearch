@@ -1,6 +1,7 @@
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { buildAutoresearchPresentationModel } from "../autoresearch-presentation"
+import { toJsonlHookInvocation } from "../core/hooks"
 import { reconstructJsonlState, serializeJsonlEntry } from "../core/jsonl"
 import { normalizeAutoresearchState } from "../core/session-config"
 import {
@@ -65,7 +66,11 @@ export async function appendJsonlEntry(paths: ResolvedAutoresearchPaths, entry: 
     }
   }
 
-  const nextContent = `${existing ?? ""}${serializeJsonlEntry(entry)}`
+  const persistedEntry: AutoresearchJsonlEntry = entry.type === "hook"
+    ? { ...entry, hook: toJsonlHookInvocation(entry.hook) }
+    : entry
+
+  const nextContent = `${existing ?? ""}${serializeJsonlEntry(persistedEntry)}`
   const nextInspection = inspectAutoresearchJsonl(nextContent)
   if (nextInspection.invalidLineNumbers.length > 0) {
     throw new Error(`Refusing to write invalid autoresearch.jsonl content. Validation failed on line(s) ${nextInspection.invalidLineNumbers.join(", ")}.`)

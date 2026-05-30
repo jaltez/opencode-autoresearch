@@ -1,7 +1,10 @@
 import type { AutoresearchMode } from "../core/types"
 
+export const DEFAULT_AUTO_RESUME_CAP = 20
+
 export interface SessionRuntime {
   agent?: string
+  autoResumeCount: number
   autoResumePending: boolean
   followUpQueued: boolean
   lastActivityAt: number
@@ -15,21 +18,47 @@ export interface SessionRuntime {
 export class AutoresearchRuntimeStore {
   #state = new Map<string, SessionRuntime>()
 
-  activate(sessionId: string, workDir?: string): SessionRuntime {
-    const next: SessionRuntime = {
-      agent: this.#state.get(sessionId)?.agent,
-      autoResumePending: false,
-      followUpQueued: false,
-      lastActivityAt: Date.now(),
-      lastAutomatedAt: Date.now(),
-      mode: "active",
-      pendingReason: undefined,
-      sessionId,
-      workDir,
-    }
-
+  #commit(
+    sessionId: string,
+    build: (current: SessionRuntime | undefined, now: number) => SessionRuntime,
+  ): SessionRuntime {
+    const current = this.#state.get(sessionId)
+    const next = build(current, Date.now())
     this.#state.set(sessionId, next)
     return next
+  }
+
+  #next(
+    sessionId: string,
+    current: SessionRuntime | undefined,
+    now: number,
+    overrides: Partial<Omit<SessionRuntime, "sessionId">>,
+  ): SessionRuntime {
+    return {
+      agent: current?.agent,
+      autoResumeCount: current?.autoResumeCount ?? 0,
+      autoResumePending: current?.autoResumePending ?? false,
+      followUpQueued: current?.followUpQueued ?? false,
+      lastActivityAt: now,
+      lastAutomatedAt: current?.lastAutomatedAt,
+      mode: current?.mode ?? "off",
+      pendingReason: current?.pendingReason,
+      sessionId,
+      workDir: current?.workDir,
+      ...overrides,
+    }
+  }
+
+  activate(sessionId: string, workDir?: string): SessionRuntime {
+    return this.#commit(sessionId, (current, now) => this.#next(sessionId, current, now, {
+      autoResumeCount: 0,
+      autoResumePending: false,
+      followUpQueued: false,
+      lastAutomatedAt: now,
+      mode: "active",
+      pendingReason: undefined,
+      workDir,
+    }))
   }
 
   clear(sessionId: string): void {
@@ -46,115 +75,79 @@ export class AutoresearchRuntimeStore {
 
   setAgent(sessionId: string, agent: string | undefined): SessionRuntime | undefined {
     if (!agent) return this.#state.get(sessionId)
-
-    const current = this.#state.get(sessionId)
-    const next: SessionRuntime = {
-      agent,
-      autoResumePending: current?.autoResumePending ?? false,
-      followUpQueued: current?.followUpQueued ?? false,
-      lastActivityAt: Date.now(),
-      lastAutomatedAt: current?.lastAutomatedAt,
-      mode: current?.mode ?? "off",
-      pendingReason: current?.pendingReason,
-      sessionId,
-      workDir: current?.workDir,
-    }
-
-    this.#state.set(sessionId, next)
-    return next
+    return this.#commit(sessionId, (current, now) => this.#next(sessionId, current, now, { agent }))
   }
 
   markFollowUpQueued(sessionId: string, queued: boolean): SessionRuntime | undefined {
     const current = this.#state.get(sessionId)
     if (!current) return undefined
 
-    const next = { ...current, followUpQueued: queued, lastActivityAt: Date.now() }
-    this.#state.set(sessionId, next)
-    return next
+    return this.#commit(sessionId, (_, now) => ({ ...current, followUpQueued: queued, lastActivityAt: now }))
   }
 
   markAutomated(sessionId: string, workDir?: string): SessionRuntime {
-    const current = this.#state.get(sessionId)
-    const next: SessionRuntime = {
-      agent: current?.agent,
-      autoResumePending: current?.autoResumePending ?? false,
+    return this.#commit(sessionId, (current, now) => this.#next(sessionId, current, now, {
       followUpQueued: false,
-      lastActivityAt: Date.now(),
-      lastAutomatedAt: Date.now(),
-      mode: current?.mode ?? "off",
-      pendingReason: current?.pendingReason,
-      sessionId,
+      lastAutomatedAt: now,
       workDir: workDir ?? current?.workDir,
-    }
-
-    this.#state.set(sessionId, next)
-    return next
+    }))
   }
 
-  queueAutoResume(sessionId: string, reason?: string): SessionRuntime {
-    const current = this.#state.get(sessionId)
-    const next: SessionRuntime = {
-      agent: current?.agent,
-      autoResumePending: true,
-      followUpQueued: false,
-      lastActivityAt: Date.now(),
-      lastAutomatedAt: current?.lastAutomatedAt,
-      mode: current?.mode ?? "active",
-      pendingReason: reason,
-      sessionId,
-      workDir: current?.workDir,
-    }
+  queueAutoResume(sessionId: string, reason?: string, cap = DEFAULT_AUTO_RESUME_CAP): SessionRuntime {
+    return this.#commit(sessionId, (current, now) => {
+      const count = current?.autoResumeCount ?? 0
+      if (count >= cap) {
+        return this.#next(sessionId, current, now, {
+          autoResumeCount: count,
+          autoResumePending: false,
+          followUpQueued: false,
+          mode: "off",
+          pendingReason: `cap:${cap}`,
+        })
+      }
 
-    this.#state.set(sessionId, next)
-    return next
+      return this.#next(sessionId, current, now, {
+        autoResumeCount: count + 1,
+        autoResumePending: true,
+        followUpQueued: false,
+        mode: current?.mode ?? "active",
+        pendingReason: reason,
+      })
+    })
   }
 
   consumeAutoResume(sessionId: string): SessionRuntime | undefined {
     const current = this.#state.get(sessionId)
     if (!current) return undefined
 
-    const next: SessionRuntime = {
+    return this.#commit(sessionId, (_, now) => ({
       ...current,
       autoResumePending: false,
       followUpQueued: true,
-      lastActivityAt: Date.now(),
-    }
-
-    this.#state.set(sessionId, next)
-    return next
+      lastActivityAt: now,
+    }))
   }
 
   resetLoop(sessionId: string): SessionRuntime | undefined {
     const current = this.#state.get(sessionId)
     if (!current) return undefined
 
-    const next: SessionRuntime = {
+    return this.#commit(sessionId, (_, now) => ({
       ...current,
+      autoResumeCount: 0,
       autoResumePending: false,
       followUpQueued: false,
-      lastActivityAt: Date.now(),
+      lastActivityAt: now,
       pendingReason: undefined,
-    }
-    this.#state.set(sessionId, next)
-    return next
+    }))
   }
 
   setMode(sessionId: string, mode: AutoresearchMode): SessionRuntime {
-    const current = this.#state.get(sessionId)
-    const next: SessionRuntime = {
-      agent: current?.agent,
+    return this.#commit(sessionId, (current, now) => this.#next(sessionId, current, now, {
+      autoResumeCount: mode === "active" ? 0 : current?.autoResumeCount ?? 0,
       autoResumePending: mode === "active" ? current?.autoResumePending ?? false : false,
-      followUpQueued: current?.followUpQueued ?? false,
-      lastActivityAt: Date.now(),
-      lastAutomatedAt: current?.lastAutomatedAt,
       mode,
-      pendingReason: current?.pendingReason,
-      sessionId,
-      workDir: current?.workDir,
-    }
-
-    this.#state.set(sessionId, next)
-    return next
+    }))
   }
 
   shouldResume(sessionId: string, debounceMs = 4_000): boolean {
@@ -167,21 +160,7 @@ export class AutoresearchRuntimeStore {
   }
 
   touch(sessionId: string): SessionRuntime {
-    const current = this.#state.get(sessionId)
-    const next: SessionRuntime = {
-      agent: current?.agent,
-      autoResumePending: current?.autoResumePending ?? false,
-      followUpQueued: current?.followUpQueued ?? false,
-      lastActivityAt: Date.now(),
-      lastAutomatedAt: current?.lastAutomatedAt,
-      mode: current?.mode ?? "off",
-      pendingReason: current?.pendingReason,
-      sessionId,
-      workDir: current?.workDir,
-    }
-
-    this.#state.set(sessionId, next)
-    return next
+    return this.#commit(sessionId, (current, now) => this.#next(sessionId, current, now, {}))
   }
 }
 

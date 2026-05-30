@@ -1,19 +1,30 @@
 import { tool } from "@opencode-ai/plugin"
 import { Effect } from "effect"
 import { currentSegmentRuns } from "../../core/jsonl"
-import { computeSegmentConfidence } from "../../core/metrics"
-import type { ExperimentRun } from "../../core/types"
+import { computeSegmentConfidence, parseMetricLine } from "../../core/metrics"
+import type { ExperimentRun, MetricValue, SecondaryMetricRegistry } from "../../core/types"
 import { formatAutoresearchRecoveryMessage } from "../durability"
 import { discardRunChanges, keepRunChanges, preservedArtifactPaths } from "../git"
 import { executeAutoresearchHook } from "../hook-runner"
 import { appendJsonlEntry, loadAutoresearchSession, writeStateSnapshot } from "../storage"
 import { runtimeStore } from "../runtime"
+import {
+  describeMetricDrift,
+  formatAsiOutput,
+  formatConfidenceOutput,
+  mergeOverrideMetrics,
+  parseAsi,
+} from "./experiment-helpers"
 
 export const logExperimentTool = tool({
   description: "Record the keep or discard decision for an experiment run and apply the matching git action when possible.",
   args: {
     asi: tool.schema.string().optional(),
+    commit: tool.schema.string().optional(),
     decision: tool.schema.enum(["discard", "keep", "pending", "retry"]),
+    force: tool.schema.boolean().optional(),
+    metric: tool.schema.string().optional(),
+    metrics: tool.schema.array(tool.schema.string()).optional(),
     runId: tool.schema.string().optional(),
     summary: tool.schema.string().optional(),
     workDir: tool.schema.string().optional(),
@@ -36,17 +47,27 @@ export const logExperimentTool = tool({
       return "No recorded run is available to log."
     }
 
-    if (run.status === "checks_failed" && args.decision === "keep") {
-      return "Cannot keep a run whose checks failed."
+    if (run.status === "checks_failed" && args.decision === "keep" && !args.force) {
+      return "Cannot keep a run whose checks failed. Re-run with force=true to override."
     }
 
     const asi = parseAsi(args.asi, run.asi)
+    const mergedMetrics = mergeOverrideMetrics(run.metrics, args.metric, args.metrics)
+
+    const hasMetricOverride = Boolean(args.metric) || (args.metrics?.length ?? 0) > 0
+    if (hasMetricOverride && !args.force) {
+      const drift = describeMetricDrift(session.state.secondaryMetrics, mergedMetrics)
+      if (drift) {
+        return `${drift} Pass force=true to override.`
+      }
+    }
 
     const updatedRun: ExperimentRun = {
       ...run,
       asi,
       commit: undefined,
       decision: args.decision,
+      metrics: mergedMetrics,
       status:
         args.decision === "keep"
           ? "kept"
@@ -65,22 +86,27 @@ export const logExperimentTool = tool({
 
     let gitOutput = "No git action was required."
     if (args.decision === "keep") {
-      await Effect.runPromise(context.ask({
-        always: ["*"],
-        metadata: { decision: args.decision, runId: updatedRun.id, tool: "Log autoresearch decision" },
-        patterns: ["git commit"],
-        permission: "bash",
-      }))
-      const kept = await keepRunChanges(session.paths.directory, updatedRun, preservedArtifactPaths(session.paths.directory))
-      if (kept.status === "failed") {
-        return [
-          `Unable to keep run #${updatedRun.iteration} because git commit failed.`,
-          kept.output,
-          "The run remains pending; fix the git issue and retry log_experiment with decision=keep.",
-        ].join("\n")
+      if (args.commit) {
+        updatedRun.commit = args.commit
+        gitOutput = `Recorded externally produced commit ${args.commit}.`
+      } else {
+        await Effect.runPromise(context.ask({
+          always: ["*"],
+          metadata: { decision: args.decision, runId: updatedRun.id, tool: "Log autoresearch decision" },
+          patterns: ["git commit"],
+          permission: "bash",
+        }))
+        const kept = await keepRunChanges(session.paths.directory, updatedRun, preservedArtifactPaths(session.paths.directory))
+        if (kept.status === "failed") {
+          return [
+            `Unable to keep run #${updatedRun.iteration} because git commit failed.`,
+            kept.output,
+            "The run remains pending; fix the git issue and retry log_experiment with decision=keep.",
+          ].join("\n")
+        }
+        updatedRun.commit = kept.commit
+        gitOutput = kept.output
       }
-      updatedRun.commit = kept.commit
-      gitOutput = kept.output
     }
 
     if (args.decision === "discard") {
@@ -104,6 +130,7 @@ export const logExperimentTool = tool({
       abort: context.abort,
       directory: nextSession.paths.directory,
       kind: "after",
+      lastRun: updatedRun,
       projectDir: context.directory,
       run: updatedRun,
       sessionId: context.sessionID,
@@ -159,49 +186,4 @@ function autoResumeReason(run: ExperimentRun): string {
   if (run.decision === "keep") return `next:${run.id}`
   if (run.decision === "discard" || run.decision === "retry") return `retry:${run.id}`
   return `pending:${run.id}`
-}
-
-function formatConfidenceOutput(confidence: number | null | undefined): string | undefined {
-  if (confidence == null) return undefined
-  if (confidence >= 2) return `Confidence: ${confidence.toFixed(1)}x noise floor — improvement is likely real.`
-  if (confidence >= 1) return `Confidence: ${confidence.toFixed(1)}x noise floor — improvement is above noise but still marginal.`
-  return `Confidence: ${confidence.toFixed(1)}x noise floor — this result is still within noise; rerun if you need to confirm it.`
-}
-
-function formatAsiOutput(asi: Record<string, unknown> | undefined): string | undefined {
-  if (!asi || Object.keys(asi).length === 0) return undefined
-
-  const parts = Object.entries(asi)
-    .map(([key, value]) => `${key}=${stringifyAsiValue(value)}`)
-  return `ASI: ${parts.join(" | ")}`
-}
-
-function parseAsi(value: string | undefined, existing: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
-  if (!value?.trim()) return existing
-
-  try {
-    const parsed = JSON.parse(value) as unknown
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return {
-        ...(existing ?? {}),
-        ...(parsed as Record<string, unknown>),
-      }
-    }
-  } catch {
-    // Fall back to a plain string note.
-  }
-
-  return {
-    ...(existing ?? {}),
-    note: value.trim(),
-  }
-}
-
-function stringifyAsiValue(value: unknown): string {
-  if (typeof value === "string") return value
-  try {
-    return JSON.stringify(value)
-  } catch {
-    return String(value)
-  }
 }

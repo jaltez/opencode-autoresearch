@@ -32,11 +32,15 @@ export interface ExperimentCheckResult {
   passed: boolean
 }
 
+export type MetricDirection = "higher" | "lower"
+
 export interface ExperimentConfig {
   benchmarkCommand?: string
   command: string
   createdAt: string
   maxIterations?: number
+  metricDirection?: MetricDirection
+  metricUnit?: string
   name: string
   objective?: string
   primaryMetric?: string
@@ -70,6 +74,7 @@ export interface ExperimentRun {
 
 export interface HookInvocation {
   at: string
+  durationMs?: number
   exitCode?: number
   kind: "after" | "before"
   message?: string
@@ -77,6 +82,8 @@ export interface HookInvocation {
   status: "failed" | "ok" | "skipped" | "timed_out"
   stderr?: string
   stdout?: string
+  stdoutBytes?: number
+  timedOut?: boolean
 }
 
 export interface AutoresearchState {
