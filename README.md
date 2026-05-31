@@ -10,7 +10,7 @@ This project is inspired by `pi-autoresearch`, but it is implemented as an OpenC
 - NPM plugin package: `@jaltez/opencode-autoresearch`.
 - Internal subpath exports: `@jaltez/opencode-autoresearch/server` and `@jaltez/opencode-autoresearch/tui`.
 - Session source of truth: `autoresearch.jsonl` plus generated `autoresearch.state.json`.
-- Current validation command: `bun run check`.
+- Current validation commands: `bun run typecheck`, `bun test`, and `bun run build`.
 
 ## Install And Build
 
@@ -128,6 +128,10 @@ METRIC total_us=15200 us lower
 
 Benchmark timeouts default to 600 seconds and are recorded as `crashed` with exit code 124. Check timeouts default to 300 seconds and are recorded as `checks_failed` with exit code 124. Both can be overridden per run with `timeout_seconds` and `checks_timeout_seconds`.
 
+`init_experiment` and `autoresearch-create` can pin the primary metric unit and direction with `metricUnit` and `metricDirection` (`higher` or `lower`). `run_experiment` applies those overrides to the parsed primary metric and warns when the configured primary metric was not emitted by the benchmark.
+
+`run_experiment` returns parsed metrics plus a `Next: call log_experiment ...` hint. `log_experiment` accepts `metric`, `metrics`, `commit`, and `force` overrides for compatibility with `pi-autoresearch` guidance. Metric overrides are rejected when they add or drop previously tracked secondary metrics unless `force=true` is provided.
+
 Kept runs are committed when the work directory is inside a git repository. Commit messages include JSON trailers:
 
 ```text
@@ -144,7 +148,9 @@ Hooks are optional executable scripts. Non-executable hook files are skipped.
 - `before` runs before the benchmark command.
 - `after` runs after `log_experiment` applies the decision and git action.
 
-Hooks receive JSON on stdin with the event name, cwd, session snapshot, and run details when available. Hook stdout and stderr are capped at 8KB with UTF-8-safe truncation. JSON stdout can provide a concise `message` field for agent steering.
+Hooks receive single-line JSON on stdin with the event name, cwd, session snapshot, and run details when available. The payload includes both the OpenCode-oriented camelCase fields and `pi-autoresearch` compatibility aliases such as `last_run`, `next_run`, `session.metric_name`, `session.metric_unit`, `session.direction`, `session.baseline_metric`, `session.best_metric`, `session.run_count`, and `session.goal`.
+
+Hook stdout and stderr are capped at 8KB with UTF-8-safe truncation. JSON stdout can provide a concise `message` field for agent steering; arbitrary JSON without `decision` or `message` is preserved as plain text. JSONL persistence stores slim hook entries without raw stdout/stderr to keep long sessions compact.
 
 ## Finalize
 
@@ -164,12 +170,34 @@ Autoresearch blocks loop mutations when the source-of-truth JSONL is missing or 
 
 Backups are kept under `.autoresearch.backups` and are preserved by destructive clears.
 
+## Known Limitations
+
+- Benchmark output is not streamed while `run_experiment` is running. The OpenCode tool API currently exposes the tool title via `context.metadata`, but not a streaming progress callback.
+- `autoresearch export` writes a static `autoresearch.dashboard.html`. Re-run export or refresh after regenerating the file; there is no live SSE browser dashboard yet.
+- The original `pi-autoresearch` SKILL.md files and example hook library are not bundled yet because the source tree was not available during the port. The built-in `autoresearch_hooks` tool still scaffolds working before/after hook scripts.
+- Session initialization does not fire a `before` hook. In this port, `before` is run-bound and fires before benchmark runs; a future `session.init` hook would be a clearer lifecycle event.
+
+## Validation Checklist
+
+Run the full local gate before publishing or loading a checkout into OpenCode:
+
+```sh
+bun install
+bun run typecheck
+bun test
+bun run build
+npm pack --dry-run
+```
+
+For a manual smoke test, load the checkout with `"plugin": ["file:."]` in a disposable project, select the `autoresearch` agent, run `autoresearch-create`, then complete one `init_experiment` / `run_experiment` / `log_experiment decision=keep` cycle and one `decision=discard` cycle. Confirm `autoresearch.jsonl`, `autoresearch.state.json`, git trailers, hook entries, backups, export, and finalize behavior before release.
+
 ## Development
 
 ```sh
 bun run typecheck
 bun test
 bun run check
+bun run build
 ```
 
 Keep changes focused and add tests around any behavior that affects session durability, git operations, hook execution, metrics parsing, or auto-resume semantics.

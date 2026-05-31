@@ -71,6 +71,9 @@ describe("server tools integration", () => {
     expect(sessionAfterRun.state.config?.command).toBe("./autoresearch.sh")
     expect(sessionAfterRun.state.config?.benchmarkCommand).toBe("./benchmark.sh")
     const recordedRun = sessionAfterRun.state.runs[0]
+    const runMetadata = (runResult as { metadata?: Record<string, unknown> }).metadata ?? {}
+    expect(runMetadata).toEqual(expect.objectContaining({ runId: recordedRun?.id }))
+    expect(runMetadata).not.toHaveProperty("runID")
     expect(recordedRun?.status).toBe("completed")
     expect(recordedRun?.metrics.map((metric) => metric.name)).toEqual(["accuracy", "latency_ms"])
     expect(sessionAfterRun.state.hooks).toHaveLength(1)
